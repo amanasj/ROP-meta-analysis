@@ -4,7 +4,7 @@
 Supplementary code used for journal submission: 
 
 A Network Meta-Analysis Comparing the Efficacies of Intravitreal Bevacizumab, Ranibizumab, Aflibercept, and Laser Treatment for Retinopathy of Prematurity
-Emer Chang, Amandeep S Josan, Ravi Purohit, Chetan K Patel, Kanmin Xue
+by Emer Chang, Amandeep S Josan, Ravi Purohit, Chetan K Patel, Kanmin Xue
 
 
 
