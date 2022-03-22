@@ -1,0 +1,1296 @@
+---
+title: "ROP frequentist meta-analysis - Gestational age, birth weight and postmenstrual age as potential moderators"
+author: "Aman Josan"
+date: "`r format(Sys.time(), '%d/%m/%y')`"
+output:
+  html_document: 
+    self_contained: yes
+    
+    
+
+editor_options: 
+  chunk_output_type: inline
+---
+
+
+
+
+<style>
+.column-left{
+  float: left;
+  width: 50%;
+  text-align: left;
+}
+.column-right{
+  float: right;
+  width: 50%;
+  text-align: right;
+}
+</style>
+
+
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, comment=NA, cache.rebuild = TRUE)
+library(here)
+library(dplyr)
+library(readxl)
+library(robumeta)
+library(gemtc)
+library(rjags)
+library(reshape2)
+library(kableExtra)
+library(metafor)
+library(dmetar)
+library(tidyverse)
+```
+
+
+<br><br>
+
+
+### Type 1 ROP
+<br>
+
+```{r, message=FALSE, warning=FALSE}
+data <- suppressMessages(read_excel(("C:\\Users\\ajosan\\Desktop\\R_scripts\\ROP_meta_analysis\\data\\ROP data  21March 2022 Aman FIREFLYEYE.xlsx"),sheet = 1, range = "b3:ba34", col_names = T))
+
+df <- data %>% select("study",
+                      "treatment-Avastin",
+                      "treatment-Lucentis",
+                      "treatment-Eylea",
+                      "treatment-laser",
+                      "study design", 
+                      "no. Eyes-Avastin",
+                      "no. Eyes-Lucentis",
+                      "no. Eyes-Eylea",
+                      "no. Eyes-laser",
+                      "no. retreated-Avastin",
+                      "no. retreated-Lucentis",
+                      "no. retreated-Eylea",
+                      "no. retreated-laser",
+                      "mean gestational age - Avastin (wks)",
+                      "mean gestational age - Lucentis (wks)",
+                      "mean gestational age - Eylea (wks)",
+                      "mean gestational age - Laser (wks)",
+                      "mean birth weight - Avastin (wks)",
+                      "mean birth weight - Lucentis (wks)",
+                      "mean birth weight - Eylea (wks)",
+                      "mean birth weight - Laser (wks)",
+                      "mean PMA at tx (weeks)- Avastin",
+                      "mean PMA at tx (weeks)- Lucentis",
+                      "mean PMA at tx (weeks)- Eylea",
+                      "mean PMA at tx (weeks)- Laser"
+                      ) 
+
+df[df == "n/a" ] <- NA
+
+df[,c(7:26)] <- suppressWarnings(lapply(df[,c(7:26)], as.numeric))
+
+
+
+df$`n_responders-Avastin` <- 
+  df$`no. Eyes-Avastin` - df$`no. retreated-Avastin`
+df$`n_responders-Lucentis` <- 
+  df$`no. Eyes-Lucentis` - df$`no. retreated-Lucentis`
+df$`n_responders-Eylea` <- 
+  df$`no. Eyes-Eylea` - df$`no. retreated-Eylea`
+df$`n_responders-laser` <- 
+  df$`no. Eyes-laser` - df$`no. retreated-laser`
+
+df <- df[,-c(11:14)]
+
+names(df)[names(df) == 'n_responders-Avastin'] <- 'no. responders-Avastin'
+names(df)[names(df) == 'n_responders-Lucentis'] <- 'no. responders-Lucentis'
+names(df)[names(df) == 'n_responders-Eylea'] <- 'no. responders-Eylea'
+names(df)[names(df) == 'n_responders-laser'] <- 'no. responders-Laser'
+
+
+df <- mutate(df, study_id = 1:nrow(df)) # This adds a study id
+df <- df[c(27,1:26)] # rearranges columns
+
+df_table <- df[,-c(1)]
+### print table of studies
+df_table %>%
+  kbl(caption = "All studies which considered type 1 ROP") %>%
+  kable_classic(full_width = T, html_font = "Cambria", font_size=9) %>%
+  kable_styling("striped") 
+
+no_studies <- nrow(df_table)
+no_patients <- sum(df[,c(8:11)], na.rm = T)
+```
+
+<br><br>
+
+number of studies=`r no_studies`
+
+
+Number of patients=`r no_patients`
+
+<br><br>
+
+
+## Event count data and conventional meta-analysis of proportions
+
+
+<br>
+
+
+### Transform data (Dichotomous data)
+
+<br>
+
+Here we define the number of responders as the number of patients treated minus the number of patients requiring re-treatment. Hence the measure of treatment effectiveness we are applying is the number of patients requiring no re-treatment.
+
+
+Since we are dealing with raw prevalence (or event rate) data (i.e. sample size and number of treatment responders) rather than correlations (i.e. Pearsons r for treatment correlations) we need to perform a meta-analysis of proportions.  Most meta-analysis in the literature deal with correlations and p-values.
+
+
+
+The proportion of treatment responders ($p$) is given by
+
+$$\begin{align}
+p = \frac{x}{n}
+\end{align}$$
+
+<br>
+
+where $x$ is the number of treatment responders in a study and $n$ is the total number treated with that treatment in the study.
+
+
+
+Again data is quite skewed (as is normally the case in number of event data), hence use double arcsine transformation for the conventional meta-analysis again.
+
+
+
+
+```{r, results="hide"}
+### prep dataframe for analysis by having t,n,r columns
+df2 <- df
+
+df2$t.1 <- 1 #"Avastin" 
+df2$t.2 <- 2 #"Lucentis" 
+df2$t.3 <- 3 #"Eylea"
+df2$t.4 <- 4 #"Laser"
+
+df2 <- df2[c(1,2,28:31,8:11,24:27,12:15,16:19,20:23)]
+
+colnames(df2)[7] <- "n.1"
+colnames(df2)[8] <- "n.2"
+colnames(df2)[9] <- "n.3"
+colnames(df2)[10] <- "n.4"
+colnames(df2)[11] <- "r.1"
+colnames(df2)[12] <- "r.2"
+colnames(df2)[13] <- "r.3"
+colnames(df2)[14] <- "r.4"
+colnames(df2)[15] <- "ga.1"
+colnames(df2)[16] <- "ga.2"
+colnames(df2)[17] <- "ga.3"
+colnames(df2)[18] <- "ga.4"
+colnames(df2)[19] <- "bw.1"
+colnames(df2)[20] <- "bw.2"
+colnames(df2)[21] <- "bw.3"
+colnames(df2)[22] <- "bw.4"
+colnames(df2)[23] <- "pma.1"
+colnames(df2)[24] <- "pma.2"
+colnames(df2)[25] <- "pma.3"
+colnames(df2)[26] <- "pma.4"
+
+
+studyID <- df2[,c(1,2)]
+df2 <- suppressWarnings(data.frame(lapply(df2,as.numeric)))
+df2 <- df2[,-c(2)]
+```
+
+```{r, include=FALSE}
+### reshape to group by treatment type
+df_long <- reshape(df2, 
+  varying = c("t.1","t.2","t.3","t.4",
+              "n.1","n.2","n.3","n.4",
+              "r.1","r.2","r.3","r.4",
+              "ga.1","ga.2","ga.3","ga.4",
+              "bw.1","bw.2","bw.3","bw.4",
+              "pma.1","pma.2","pma.3","pma.4"), 
+  timevar = "treatment",
+  direction = "long")
+
+df_long <- df_long[,c(1,3,4,5,6,7,8)] %>% arrange(study_id)
+
+df_long <- df_long[!is.na(df_long$r), ]
+df_long <- df_long[!is.na(df_long$n), ]
+
+colnames(df_long) <- c("study_id", "treatment", "sampleSize", "responders", "gest.age", "b.weight", "pma") 
+
+df_long <- merge(x = df_long, y = studyID, by = "study_id", all.x = TRUE)
+df_long <- df_long[c(1,8,2,3,4,5,6,7)]
+df_long$treatment <- as.character(df_long$treatment)
+df_long$trt <- ""
+df_long$trt[df_long$treatment=="1"] <- "Avastin"
+df_long$trt[df_long$treatment=="2"] <- "Lucentis"
+df_long$trt[df_long$treatment=="3"] <- "Eylea"
+df_long$trt[df_long$treatment=="4"] <- "Laser"
+df_long <- df_long[c(1,2,3,9,4,5,6,7,8)]
+```
+
+```{r, include=FALSE, warning=FALSE}
+### use metafor package to plot forest, funnel plots and - not available in gemtc
+metafor_data <- df_long
+colnames(metafor_data) <- c("study", "authors","treatment","trt","ni","xi","g.age","b.weight","pma")
+metafor_data <- mutate(metafor_data, id = 1:nrow(metafor_data))
+metafor_all_data <- metafor_data[c(10,1,2,4,5,6,7,8,9)]
+
+
+
+### use escalc to find effect size in terms of freeman & Tukey proportions
+metafor_all_df <- metafor::escalc(data=metafor_all_data, measure="PFT", xi=xi, ni=ni, slab=paste(authors, trt), add = 0)
+
+
+### perform mixed effects model on each group
+metafor_all_res_mod <- 
+  metafor::rma(yi,vi,mods = ~ g.age+b.weight+pma,data=metafor_all_df, method = "REML")
+
+metafor_Avastin_res_mod <- 
+  metafor::rma(yi,vi,mods = ~ g.age+b.weight+pma,data=metafor_all_df, method = "REML", subset=(trt=="Avastin"))
+
+metafor_Lucentis_res_mod <- 
+  metafor::rma(yi,vi,mods = ~ g.age+b.weight+pma,data=metafor_all_df, method = "REML", subset=(trt=="Lucentis"))
+
+metafor_Laser_res_mod <- 
+  metafor::rma(yi,vi,mods = ~ g.age+b.weight+pma,data=metafor_all_df, method = "REML", subset=(trt=="Laser"))
+
+metafor_Eylea_res_mod <- 
+  metafor::rma(yi,vi,mods = ~ g.age+b.weight,data=metafor_all_df, method = "REML", subset=(trt=="Eylea"))
+
+metafor_Eylea_res_mod2 <- 
+  metafor::rma(yi,vi,mods = ~ pma,data=metafor_all_df, method = "REML", subset=(trt=="Eylea"))
+
+```
+
+
+
+```{r}
+Avastin_stats <- 
+  data.frame(capture.output(metafor_Avastin_res_mod)) %>%
+  kbl(caption = "Avastin") %>%
+  kable_classic(full_width = F, html_font = "Cambria", 
+                font_size=12)
+Avastin_stats
+
+
+```
+
+
+```{r}
+Lucentis_stats <- data.frame(capture.output(metafor_Lucentis_res_mod)) %>%
+  kbl(caption = "Lucentis") %>%
+  kable_classic(full_width = F, html_font = "Cambria", 
+                font_size=12)
+Lucentis_stats
+
+```
+
+
+```{r}
+Laser_stats <- 
+  data.frame(capture.output(metafor_Laser_res_mod)) %>%
+  kbl(caption = "Laser") %>%
+  kable_classic(full_width = F, html_font = "Cambria", 
+                font_size=12)
+Laser_stats
+```
+
+
+```{r}
+Eylea_stats <- data.frame(capture.output(metafor_Eylea_res_mod)) %>%
+  kbl(caption = "Eylea") %>%
+  kable_classic(full_width = F, html_font = "Cambria", 
+                font_size=12)
+Eylea_stats
+```
+
+
+```{r}
+Eylea_stats2 <- data.frame(capture.output(metafor_Eylea_res_mod2)) %>%
+  kbl(caption = "Eylea") %>%
+  kable_classic(full_width = F, html_font = "Cambria", 
+                font_size=12)
+Eylea_stats2
+```
+
+
+
+
+
+<br><br>
+
+Looking at the lines titled "test of moderators" and "g.age", "b.weight" and  "pma" under "model results" we see that the model predictions find neither gestational age, birth weight nor mean postmenstrual age at treatment have a significant moderating factor. 
+
+
+For example for those treated with laser, the p-value for the combined moderating effect of GA, BW & pma is 0.4813 and with individual moderating effect p-values for GA=0.8921 and BW=0.9775 and pma=0.1228.
+
+
+
+<br>
+
+Hence all treatments now have non-significant correlations for gestational age and birth weight and PMA at treatment as moderators for effect size. Eylea moderator analysis had to be split into two parts.The first analyses the effects of all combinations of g.age and birth weight individually and together on the effect size. The second analyses the moderating effect of PMA alone on the effect size. It was not possible to combine PMA with g.age and birth weight to analyse combinations of all moderators as there are too few PMA samples for Eylea. No moderating effects were found for Eylea. 
+
+<br>
+
+
+Performing a frequentist meta-regression and generating a scatter plot with regression line and confidence intervals to see the relationship although now there is no significant correlation so these plots can be mostly ignored. Here I've only shown plots for gestational age as birth weight plots look pretty similar. I can plot them if needed but as they are non-significant I haven't bothered here.
+
+
+<br><br>
+
+Hence, for Lucentis, flat-ish line shows there is no real correlation to GA (especially when taking confidence interval widths into account, i.e. line could be completely flat):
+
+<div class = "row">
+<div class="column-left">
+```{r, warning=FALSE}
+Lucentis_data <- metafor_all_data %>%
+filter(grepl("Lucentis", `trt`)) 
+
+Lucentis_data_mod <- 
+            metafor::escalc(data = Lucentis_data,  
+                            measure = "PFT", xi=xi, ni=ni, 
+                            slab = paste(authors, trt), add = 0)
+
+Lucentis_modplot <- metafor::rma(yi, vi, 
+                            mods = ~ g.age,
+                            data = Lucentis_data_mod,                                         
+                            method = "REML")
+
+Lucentis_predict <- 
+          predict(Lucentis_modplot, newmods=c(20:35),     
+          transf=transf.ipft.hm, 
+          targ=list(ni=Lucentis_data_mod$ni))
+
+
+wi=1/sqrt(Lucentis_data_mod$vi)
+size=1+3*(wi-min(wi))/(max(wi)-min(wi))
+plot(Lucentis_data_mod$g.age,transf.ipft.hm(Lucentis_data_mod$yi,targ=list(ni=Lucentis_data_mod$ni)),cex=size,pch=1,las=1,xlab="Gestational age (wks)", ylab="Proportional effect size")
+lines(20:35,Lucentis_predict$pred,col="navy")
+lines(20:35,Lucentis_predict$ci.lb,lty="dashed",col="maroon")
+lines(20:35,Lucentis_predict$ci.ub,lty="dashed",col="maroon")
+ids=c(1:18)
+text(Lucentis_data_mod$g.age[ids],transf.ipft.hm(Lucentis_data_mod$yi,targ=list(ni=Lucentis_data_mod$ni))[ids],ids,cex=0.8,pos=1)
+```
+
+</div>
+<div class="column-right">
+
+```{r}
+Lucentis_data_table <- Lucentis_data_mod[c(3,6,7,8,9)]
+Lucentis_data_table <- mutate(Lucentis_data_table, 
+                        study = 1:nrow(Lucentis_data_table))
+Lucentis_data_table <- Lucentis_data_table[,c(6,1,2,3,4,5)]
+colnames(Lucentis_data_table) <- c("Study", "Authors", "Sample size", "Gestational age (weeks)","Birth weight (g)","PMA at treatment (weeks")
+
+Luc_study_table <- 
+  Lucentis_data_table %>%
+  kbl(caption = "Lucentis studies and assigned ID's") %>%
+  kable_classic(full_width = F, html_font = "Cambria", 
+                font_size=9)
+
+Luc_study_table
+
+no_Luc_studies <- nrow(Lucentis_data_table)
+no_Luc_patients <- sum(Lucentis_data_table[,c(3)], na.rm = T)
+```
+</div>
+</div>
+
+
+<br>
+
+N.B. Larger circles represent larger studies. 
+
+
+<br><br>
+
+
+Scatterplot for Avastin again showing a flat-ish line representing no real correlation (completely flat line cannot be excluded when looking at the CI)
+
+
+<div class = "row">
+<div class="column-left">
+```{r, warning=FALSE}
+Avastin_data <- metafor_all_data %>%
+filter(grepl("Avastin", `trt`)) 
+
+Avastin_data_mod <- 
+            metafor::escalc(data = Avastin_data,  
+                            measure = "PFT", xi=xi, ni=ni, 
+                            slab = paste(authors, trt), add = 0)
+
+Avastin_modplot <- metafor::rma(yi, vi, 
+                            mods = ~ g.age,
+                            data = Avastin_data_mod,                                          
+                            method = "REML")
+
+Avastin_predict <- 
+          predict(Avastin_modplot, newmods=c(20:35),     
+          transf=transf.ipft.hm, 
+          targ=list(ni=Avastin_data_mod$ni))
+
+
+wi=1/sqrt(Avastin_data_mod$vi)
+size=1+3*(wi-min(wi))/(max(wi)-min(wi))
+plot(Avastin_data_mod$g.age,transf.ipft.hm(Avastin_data_mod$yi,targ=list(ni=Avastin_data_mod$ni)),cex=size,pch=1,las=1,xlab="Gestational age (wks)", ylab="Proportional effect size")
+lines(20:35,Avastin_predict$pred,col="navy")
+lines(20:35,Avastin_predict$ci.lb,lty="dashed",col="maroon")
+lines(20:35,Avastin_predict$ci.ub,lty="dashed",col="maroon")
+ids=c(1:24)
+text(Avastin_data_mod$g.age[ids],transf.ipft.hm(Avastin_data_mod$yi,targ=list(ni=Avastin_data_mod$ni))[ids],ids,cex=0.8,pos=1)
+```
+
+</div>
+<div class="column-right">
+
+```{r}
+Avastin_data_table <- Avastin_data_mod[c(3,6,7,8,9)]
+Avastin_data_table <- mutate(Avastin_data_table, 
+                        study = 1:nrow(Avastin_data_table))
+Avastin_data_table <- Avastin_data_table[,c(6,1,2,3,4,5)]
+colnames(Avastin_data_table) <- c("Study", "Authors", "Sample size", "Gestational age (weeks)", "Birth weight (g)", "PMA at treatment (weeks)")
+
+Avastin_study_table <- 
+  Avastin_data_table %>%
+  kbl(caption = "Avastin") %>%
+  kable_classic(full_width = F, html_font = "Cambria", 
+                font_size=9)
+
+Avastin_study_table
+
+no_Avastin_studies <- nrow(Avastin_data_table)
+no_Avastin_patients <- sum(Avastin_data_table[,c(3)], na.rm = T)
+```
+
+
+</div>
+</div>
+
+
+
+<br>
+
+
+Scatterplot for Laser again showing no real correlation (completely flat line cannot be excluded when looking at the CI)
+
+
+<div class = "row">
+<div class="column-left">
+```{r, warning=FALSE}
+Laser_data <- metafor_all_data %>%
+filter(grepl("Laser", `trt`)) 
+
+Laser_data_mod <- 
+            metafor::escalc(data = Laser_data,  
+                            measure = "PFT", xi=xi, ni=ni, 
+                            slab = paste(authors, trt), add = 0)
+
+Laser_modplot <- metafor::rma(yi, vi, 
+                            mods = ~ g.age,
+                            data = Laser_data_mod,                                          
+                            method = "REML")
+
+Laser_predict <- 
+          predict(Laser_modplot, newmods=c(20:35),     
+          transf=transf.ipft.hm, 
+          targ=list(ni=Laser_data_mod$ni))
+
+
+wi=1/sqrt(Laser_data_mod$vi)
+size=1+3*(wi-min(wi))/(max(wi)-min(wi))
+plot(Laser_data_mod$g.age,transf.ipft.hm(Laser_data_mod$yi,targ=list(ni=Laser_data_mod$ni)),cex=size,pch=1,las=1,xlab="Gestational age (wks)", ylab="Proportional effect size")
+lines(20:35,Laser_predict$pred,col="navy")
+lines(20:35,Laser_predict$ci.lb,lty="dashed",col="maroon")
+lines(20:35,Laser_predict$ci.ub,lty="dashed",col="maroon")
+ids=c(1:27)
+text(Laser_data_mod$g.age[ids],transf.ipft.hm(Laser_data_mod$yi,targ=list(ni=Laser_data_mod$ni))[ids],ids,cex=0.8,pos=1)
+```
+
+</div>
+<div class="column-right">
+
+```{r}
+Laser_data_table <- Laser_data_mod[c(3,6,7,8,9)]
+Laser_data_table <- mutate(Laser_data_table, 
+                        study = 1:nrow(Laser_data_table))
+Laser_data_table <- Laser_data_table[,c(6,1,2,3,4,5)]
+colnames(Laser_data_table) <- c("Study", "Authors", "Sample size", "Gestational age (weeks)", "Birth weight (g)", "PMA at treatment (weeks)")
+
+Laser_study_table <- 
+  Laser_data_table %>%
+  kbl(caption = "Laser") %>%
+  kable_classic(full_width = F, html_font = "Cambria", 
+                font_size=9)
+
+Laser_study_table
+
+no_Laser_studies <- nrow(Laser_data_table)
+no_Laser_patients <- sum(Laser_data_table[,c(3)], na.rm = T)
+```
+
+
+</div>
+</div>
+
+
+
+<br>
+
+Scatterplot for Eylea again showing no real correlation (completely flat line cannot be excluded when looking at the CI)
+
+
+<div class = "row">
+<div class="column-left">
+```{r, warning=FALSE}
+Eylea_data <- metafor_all_data %>%
+filter(grepl("Eylea", `trt`)) 
+
+Eylea_data_mod <- 
+            metafor::escalc(data = Eylea_data,  
+                            measure = "PFT", xi=xi, ni=ni, 
+                            slab = paste(authors, trt), add = 0)
+
+Eylea_modplot <- metafor::rma(yi, vi, 
+                            mods = ~ g.age,
+                            data = Eylea_data_mod,                                          
+                            method = "REML")
+
+Eylea_predict <- 
+          predict(Eylea_modplot, newmods=c(20:35),     
+          transf=transf.ipft.hm, 
+          targ=list(ni=Eylea_data_mod$ni))
+
+
+wi=1/sqrt(Eylea_data_mod$vi)
+size=1+3*(wi-min(wi))/(max(wi)-min(wi))
+plot(Eylea_data_mod$g.age,transf.ipft.hm(Eylea_data_mod$yi,targ=list(ni=Eylea_data_mod$ni)),cex=size,pch=1,las=1,xlab="Gestational age (wks)", ylab="Proportional effect size")
+lines(20:35,Eylea_predict$pred,col="navy")
+lines(20:35,Eylea_predict$ci.lb,lty="dashed",col="maroon")
+lines(20:35,Eylea_predict$ci.ub,lty="dashed",col="maroon")
+ids=c(1:27)
+text(Eylea_data_mod$g.age[ids],transf.ipft.hm(Eylea_data_mod$yi,targ=list(ni=Eylea_data_mod$ni))[ids],ids,cex=0.8,pos=1)
+```
+
+</div>
+<div class="column-right">
+
+```{r}
+Eylea_data_table <- Eylea_data_mod[c(3,6,7,8,9)]
+Eylea_data_table <- mutate(Eylea_data_table, 
+                        study = 1:nrow(Eylea_data_table))
+Eylea_data_table <- Eylea_data_table[,c(6,1,2,3,4,5)]
+colnames(Eylea_data_table) <- c("Study", "Authors", "Sample size", "Gestational age (weeks)", "Birth weight (g)", "PMA at treatment (weeks)")
+
+Eylea_study_table <- 
+  Eylea_data_table %>%
+  kbl(caption = "Eylea") %>%
+  kable_classic(full_width = F, html_font = "Cambria", 
+                font_size=9)
+
+Eylea_study_table
+
+no_Eylea_studies <- nrow(Eylea_data_table)
+no_Eylea_patients <- sum(Eylea_data_table[,c(3)], na.rm = T)
+```
+
+
+</div>
+</div>
+
+
+```{r eval=FALSE}
+### run permutation test to validate the robustness of the meta-regression models
+metafor::permutest(Lucentis_modplot)
+metafor::permutest(Avastin_modplot)
+metafor::permutest(Laser_modplot)
+metafor::permutest(Eylea_modplot)
+```
+
+
+<br>
+
+
+Recall this is a conventional frequentist meta-analysis/meta-regression and so does not compare relative effect sizes of treatments. It is simply to show whether gestational age provides a significant contributing factor towards the positive response effect size for each treatment individually. Bayesian analsysis is needed to compare one treatement vs another - coming next.
+
+<br>
+
+I have performed a permutation test for the above conventional frequentist meta-regression to validate the robustness of the models.  
+
+ 
+<br><br>
+
+
+
+
+Compare GA group means between Avastin and Lucentis (with normality and equal variance test) using student t-test
+
+
+```{r}
+################ Stats tests ################################
+#############################################################
+### test normality of data first with shapiro-wilk
+shapiro.test(df$`mean gestational age - Lucentis (wks)`)
+### F-test to check for equal variances (condition of using conventional t-test)
+var.test(df$`mean gestational age - Avastin (wks)`, df$`mean gestational age - Lucentis (wks)`)
+
+### above all ok so perform student t-test to compare group means
+means <- t.test(df$`mean gestational age - Avastin (wks)`, df$`mean gestational age - Lucentis (wks)`, var.equal = T)
+means
+```
+
+
+
+
+<br><br><br>
+
+
+## Bayesian network meta-analysis
+<br><br>
+
+## Meta-Regression
+
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+df_long2 <- df_long[c(2,4,5,6,7,8,9)]
+
+colnames(df_long2)[2] <- "treatment"
+
+### for relative risk better to use non-responders rather than responders
+df_long2 <- mutate(df_long2, responders=sampleSize-responders)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+<br><br>
+
+### Gestational age as a regressor in the Bayesian meta-regression (potential moderator)
+
+<br>
+
+
+```{r}
+df_long2_g.age <- na.omit(df_long2[,c(1:5)])
+
+network.mr_g.age <- mtc.network(df_long2_g.age, 
+                          studies = df_long2_g.age[c(1,2,5)],
+                          description = "Bayesian NMA")
+```
+
+```{r}
+summary(network.mr_g.age)
+#summary(anohe)
+```
+
+<br>
+<br>
+
+Network plot (line thickness connecting nodes denotes the number studies for each comparison)
+```{r}
+plot(network.mr_g.age)
+```
+
+
+<br>
+
+```{r}
+
+classes <- list("Laser"=c("Laser"),
+                "Avastin"=c("Avastin"),
+                "Lucentis"=c("Lucentis"),
+                "Eylea"=c("Eylea"))
+
+
+set.seed(42)
+
+
+
+
+model.mr_g.age <- mtc.model(network.mr_g.age, 
+                      likelihood = "binom", 
+                      link = "log", 
+                      linearModel = "random", 
+                      n.chain = 4, 
+                      type = "regression", 
+                      regressor = list(coefficient="unrelated",variable="gest.age", control="Laser"))
+
+#################################################################
+# By default, the model will have 4 chains - generate a seed for each - see gemtc documentation
+seeds <- sample.int(4, n = .Machine$integer.max)
+# Apply JAGS RNG settings to each chain
+model.mr_g.age$inits <- mapply(c, model.mr_g.age$inits, list(
+list(.RNG.name="base::Wichmann-Hill", .RNG.seed=seeds[1]),
+list(.RNG.name="base::Marsaglia-Multicarry", .RNG.seed=seeds[2]),
+list(.RNG.name="base::Super-Duper", .RNG.seed=seeds[3]),
+list(.RNG.name="base::Mersenne-Twister", .RNG.seed=seeds[4])), SIMPLIFY=FALSE)
+#################################################################
+
+mcmc.mr_g.age <- mtc.run(model.mr_g.age, 
+                n.adapt = 8000, 
+                n.iter = 200000, 
+                thin = 10)
+summary(mcmc.mr_g.age)
+```
+
+```{r,fig.width=8, fig.height=12,fig.align="center"}
+plot(mcmc.mr_g.age)
+```
+
+```{r eval=FALSE, fig.height=6, fig.width=6}
+gelman.plot(mcmc.mr_g.age)
+gelman.diag(mcmc.mr_g.age, multivariate = F)
+PSRF <- gelman.diag(mcmc.mr_g.age)$mpsrf
+print(paste0("PSRF = ", round(PSRF, digits = 4)))
+```
+
+```{r eval=FALSE}
+nodesplit <- mtc.nodesplit(network.mr_g.age,     
+                           linearModel = "random",
+                           n.adapt = 8000,
+                           n.iter = 200000,
+                           thin = 10)
+```
+
+```{r eval=FALSE}
+summary(nodesplit)
+names(nodesplit)
+```
+
+```{r,fig.align="center"}
+ranks.mr_g.age <- rank.probability(mcmc.mr_g.age, preferredDirection = -1)
+rankquant.mr_g.age <- rank.quantiles(ranks.mr_g.age, probs=c("2.5%"=0.025, "50%"=0.5, "97.5%"=0.975))
+```
+
+```{r eval=FALSE, fig.align="center", fig.cap="A"}
+plot(ranks.mr_g.age, beside=TRUE) # plot a 'rankogram'
+```
+
+```{r eval=FALSE , fig.align="center"}
+print(gemtc::sucra(ranks.mr_g.age), digits=3)
+```
+
+
+
+<br><br>
+
+Here are comparative forest plots comparing treatment effects against one another. I have fixed the gestational age to 26 weeks for illustrative purposes but the range of gestational ages is shown in the covariate plots below these forest plots. 
+
+<br>
+
+```{r, fig.width=8, fig.height=14,fig.align="center",fig.asp=0.30}
+
+weeks <- 26
+gemtc::forest(relative.effect(mcmc.mr_g.age, t1 = "Laser", covariate = weeks))
+gemtc::forest(relative.effect(mcmc.mr_g.age, t1 = "Lucentis", covariate = weeks))
+gemtc::forest(relative.effect(mcmc.mr_g.age, t1 = "Eylea", covariate = weeks))
+gemtc::forest(relative.effect(mcmc.mr_g.age, t1 = "Avastin", covariate = weeks))
+```
+
+
+<br>
+
+## Covariate plots for gestational age
+
+<br>
+
+Covariate plots below are in log(RR) units.
+
+<br>
+
+
+```{r, fig.align="center"}
+plotCovariateEffect(mcmc.mr_g.age, t1="Avastin", t2="Lucentis", xlim=NULL, ylim=NULL,
+                    ask=dev.interactive(orNone=TRUE))
+
+```
+
+
+<br>
+
+From the above covariate plot we can see there are no statistically significant differences between Avastin and Lucentis outcomes across gestational ages (credible intervals always incorporate zero).
+
+
+There is a downward slope suggesting Lucentis may be associated with greater risk of requiring re-treatment at lower GA (on the threshold for significance but not quite significant) but then improves to be associated with lower risk at higher GA, although none of these associations reach statistical significance unfortunately.
+
+
+<br><br>
+
+
+```{r, fig.align="center"}
+plotCovariateEffect(mcmc.mr_g.age, t1="Laser", t2="Lucentis", xlim=NULL, ylim=NULL,
+                    ask=dev.interactive(orNone=TRUE))
+
+```
+
+
+<br>
+
+
+*** 
+
+
+UPDATE (22/03/22) - we seem to have a small band of statistical significance again! Between 25.4 and 27.2 weeks GA, Laser is associated with a statistically significant reduction in risk of requiring retreatment when compared to Lucentis. 
+
+
+***
+
+
+<br>
+
+
+```{r, fig.align="center"}
+plotCovariateEffect(mcmc.mr_g.age, t1="Laser", t2="Avastin", xlim=NULL, ylim=NULL,
+                    ask=dev.interactive(orNone=TRUE))
+
+```
+
+
+<br>
+
+
+*** 
+
+
+UPDATE (22/03/22) - Again we now have no statististical differences here at any gestational age 
+
+
+***
+
+
+<br><br>
+
+
+```{r, fig.align="center"}
+plotCovariateEffect(mcmc.mr_g.age, t1="Laser", t2="Eylea", xlim=NULL, ylim=NULL,
+                    ask=dev.interactive(orNone=TRUE))
+
+```
+
+
+<br>
+
+All Eylea combination plots look the same as above whereby the are no statistically significant differences between Eylea and all other treatments for any GA. (N.B only Eylea vs Laser shown here but all other Eylea comparisons look very similar). 
+
+
+<br><br>
+
+
+***
+Summary
+
+
+*** 
+
+UPDATE (22/03/22) - Between 25.4 and 27.2 weeks GA, Laser is associated with a statistically significant reduction in risk of requiring retreatment when compared to Lucentis. No moderating effect of g.age found on any other treatment modality comparison.
+
+***
+
+
+***
+
+
+<br><br>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<br>
+
+### Birth weight as a regressor in the Bayesian meta-regression (potential moderator)
+
+<br>
+
+```{r}
+df_long2_bw <- na.omit(df_long2[,c(1:4,6)])
+
+
+#### have to remove study Riazi-esfahani 2021 as BW details for Avastin is missing so won't run
+df_long2_bw <- df_long2_bw[!(row.names(df_long2_bw) %in% c(32)) , ]
+
+
+
+network.mr_bw <- mtc.network(df_long2_bw, 
+                          studies = df_long2_bw[c(1,2,5)],
+                          description = "Bayesian NMA")
+
+```
+
+```{r}
+
+classes <- list("Laser"=c("Laser"),
+                "Avastin"=c("Avastin"),
+                "Lucentis"=c("Lucentis"),
+                "Eylea"=c("Eylea"))
+
+
+set.seed(42)
+
+model.mr_bw <- mtc.model(network.mr_bw, 
+                      likelihood = "binom", 
+                      link = "log", 
+                      linearModel = "random", 
+                      n.chain = 4, 
+                      type = "regression", 
+                      regressor = list(coefficient="unrelated",variable="b.weight", control="Laser"))
+
+#################################################################
+# By default, the model will have 4 chains - generate a seed for each - see gemtc documentation
+seeds <- sample.int(4, n = .Machine$integer.max)
+# Apply JAGS RNG settings to each chain
+model.mr_bw$inits <- mapply(c, model.mr_bw$inits, list(
+list(.RNG.name="base::Wichmann-Hill", .RNG.seed=seeds[1]),
+list(.RNG.name="base::Marsaglia-Multicarry", .RNG.seed=seeds[2]),
+list(.RNG.name="base::Super-Duper", .RNG.seed=seeds[3]),
+list(.RNG.name="base::Mersenne-Twister", .RNG.seed=seeds[4])), SIMPLIFY=FALSE)
+#################################################################
+
+mcmc.mr_bw <- mtc.run(model.mr_bw, 
+                n.adapt = 8000, 
+                n.iter = 200000, 
+                thin = 10)
+summary(mcmc.mr_bw)
+```
+
+```{r,fig.width=8, fig.height=12,fig.align="center"}
+plot(mcmc.mr_bw)
+```
+
+```{r, fig.height=6, fig.width=6}
+gelman.plot(mcmc.mr_bw)
+gelman.diag(mcmc.mr_bw, multivariate = F)
+PSRF <- gelman.diag(mcmc.mr_bw)$mpsrf
+print(paste0("PSRF = ", round(PSRF, digits = 4)))
+```
+
+```{r,fig.align="center"}
+ranks.mr_bw <- rank.probability(mcmc.mr_bw, preferredDirection = -1)
+rankquant.mr_bw <- rank.quantiles(ranks.mr_bw, probs=c("2.5%"=0.025, "50%"=0.5, "97.5%"=0.975))
+```
+
+```{r eval=FALSE, fig.align="center", fig.cap="A"}
+plot(ranks.mr_bw, beside=TRUE) # plot a 'rankogram'
+```
+
+```{r eval=FALSE , fig.align="center"}
+print(gemtc::sucra(ranks.mr_bw), digits=3)
+```
+
+
+
+<br><br>
+
+Here are comparative forest plots comparing treatment effects against one another. I have fixed the birth weight to 1000g for illustrative purposes. 
+
+<br>
+
+```{r, fig.width=8, fig.height=14,fig.align="center",fig.asp=0.30}
+
+weight <- 1000
+gemtc::forest(relative.effect(mcmc.mr_bw, t1 = "Laser", covariate = weight))
+gemtc::forest(relative.effect(mcmc.mr_bw, t1 = "Lucentis", covariate = weight))
+gemtc::forest(relative.effect(mcmc.mr_bw, t1 = "Eylea", covariate = weight))
+gemtc::forest(relative.effect(mcmc.mr_bw, t1 = "Avastin", covariate = weight))
+```
+
+
+<br>
+
+## Covariate plots for birth weight
+
+<br>
+
+Covariate plots below are in log(RR) units.
+
+<br>
+
+
+```{r, fig.align="center"}
+plotCovariateEffect(mcmc.mr_bw, t1="Avastin", t2="Lucentis", xlim=NULL, ylim=NULL,
+                    ask=dev.interactive(orNone=TRUE))
+
+```
+
+<br>
+
+There are no significant differences between treatment outcomes in terms of re-treatment rates between Avastin and Lucentis across various birth weights.
+
+<br>
+
+
+```{r, fig.align="center"}
+plotCovariateEffect(mcmc.mr_bw, t1="Laser", t2="Lucentis", xlim=NULL, ylim=NULL,
+                    ask=dev.interactive(orNone=TRUE))
+
+```
+
+
+<br>
+
+
+*** 
+
+
+UPDATE (22/03/22) - we now a band of statistical significance back. We have a significant moderating effect where birth weights between 800g and 1010g are associated with significant reduction in risk of requiring re-treatment if treated with Laser vs Lucentis
+
+
+***
+
+
+<br><br>
+
+
+
+```{r, fig.align="center"}
+plotCovariateEffect(mcmc.mr_bw, t1="Laser", t2="Avastin", xlim=NULL, ylim=NULL,
+                    ask=dev.interactive(orNone=TRUE))
+
+```
+
+<br>
+
+There are no significant differences between treatment outcomes in terms of re-treatment rates between Avastin and Laser across various birth weights.
+
+<br><br>
+
+
+
+```{r, fig.align="center"}
+plotCovariateEffect(mcmc.mr_bw, t1="Laser", t2="Eylea", xlim=NULL, ylim=NULL, 
+                    ask=dev.interactive(orNone=TRUE))
+
+```
+
+<br>
+
+Again, there are no statistically significant differences in treatment outcomes in terms of re-treatment rates evident between Eylea and any other treatment modality.
+
+<br><br>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<br><br>
+
+### Mean postmenstrual age at treatment - PMA at treatment (weeks) as a regressor in the Bayesian meta-regression (potential moderator)
+
+<br>
+
+
+```{r}
+df_long2_pma <- na.omit(df_long2[,c(1:4,7)])
+
+
+network.mr_pma <- mtc.network(df_long2_pma, 
+                          studies = df_long2_pma[c(1,2,5)],
+                          description = "Bayesian NMA")
+
+```
+
+
+```{r}
+
+classes <- list("Laser"=c("Laser"),
+                "Avastin"=c("Avastin"),
+                "Lucentis"=c("Lucentis"),
+                "Eylea"=c("Eylea"))
+
+
+set.seed(42)
+
+model.mr_pma <- mtc.model(network.mr_pma, 
+                      likelihood = "binom", 
+                      link = "log", 
+                      linearModel = "random", 
+                      n.chain = 4, 
+                      type = "regression", 
+                      regressor = list(coefficient="unrelated",variable="pma", control="Laser"))
+
+#################################################################
+# By default, the model will have 4 chains - generate a seed for each - see gemtc documentation
+seeds <- sample.int(4, n = .Machine$integer.max)
+# Apply JAGS RNG settings to each chain
+model.mr_pma$inits <- mapply(c, model.mr_pma$inits, list(
+list(.RNG.name="base::Wichmann-Hill", .RNG.seed=seeds[1]),
+list(.RNG.name="base::Marsaglia-Multicarry", .RNG.seed=seeds[2]),
+list(.RNG.name="base::Super-Duper", .RNG.seed=seeds[3]),
+list(.RNG.name="base::Mersenne-Twister", .RNG.seed=seeds[4])), SIMPLIFY=FALSE)
+#################################################################
+
+mcmc.mr_pma <- mtc.run(model.mr_pma, 
+                n.adapt = 8000, 
+                n.iter = 200000, 
+                thin = 10)
+summary(mcmc.mr_pma)
+```
+
+```{r,fig.width=8, fig.height=12,fig.align="center"}
+plot(mcmc.mr_pma)
+```
+
+```{r, fig.height=6, fig.width=6}
+gelman.plot(mcmc.mr_pma)
+gelman.diag(mcmc.mr_pma, multivariate = F)
+PSRF <- gelman.diag(mcmc.mr_pma)$mpsrf
+print(paste0("PSRF = ", round(PSRF, digits = 4)))
+```
+
+```{r,fig.align="center"}
+ranks.mr_pma <- rank.probability(mcmc.mr_pma, preferredDirection = -1)
+rankquant.mr_pma <- rank.quantiles(ranks.mr_pma, probs=c("2.5%"=0.025, "50%"=0.5, "97.5%"=0.975))
+```
+
+```{r eval=FALSE, fig.align="center", fig.cap="A"}
+plot(ranks.mr_pma, beside=TRUE) # plot a 'rankogram'
+```
+
+```{r eval=FALSE , fig.align="center"}
+print(gemtc::sucra(ranks.mr_pma), digits=3)
+```
+
+
+
+<br><br>
+
+Here are comparative forest plots comparing treatment effects against one another. I have fixed the pma to 35 weeks for illustrative purposes. 
+
+<br>
+
+```{r, fig.width=8, fig.height=14,fig.align="center",fig.asp=0.30}
+
+pma <- 35
+gemtc::forest(relative.effect(mcmc.mr_pma, t1 = "Laser", covariate = pma))
+gemtc::forest(relative.effect(mcmc.mr_pma, t1 = "Lucentis", covariate = pma))
+gemtc::forest(relative.effect(mcmc.mr_pma, t1 = "Eylea", covariate = pma))
+gemtc::forest(relative.effect(mcmc.mr_pma, t1 = "Avastin", covariate = pma))
+```
+
+
+<br>
+
+## Covariate plots for pma (weeks)
+
+<br>
+
+Covariate plots below are in log(RR) units.
+
+<br>
+
+
+```{r, fig.align="center"}
+plotCovariateEffect(mcmc.mr_pma, t1="Avastin", t2="Lucentis", xlim=NULL, ylim=NULL,
+                    ask=dev.interactive(orNone=TRUE))
+
+```
+
+<br>
+
+There are no significant differences between treatment outcomes in terms of re-treatment rates between Avastin and Lucentis across various pma at treatment.
+
+<br>
+
+
+```{r, fig.align="center"}
+plotCovariateEffect(mcmc.mr_pma, t1="Laser", t2="Lucentis", xlim=NULL, ylim=NULL,
+                    ask=dev.interactive(orNone=TRUE))
+
+```
+
+<br>
+
+
+
+
+*** 
+
+
+We have a statististical differences between Lucentis and Laser when taking mean PMA at treatment into account as a moderator. At low PMA (upto 35.7 weeks) treatment with Laser is associated with a statistically significant reduction in risk of requiring re-treatment than Lucentis. Beyond 35.7 weeks PMA there are no statistical differences.
+
+
+***
+
+
+<br><br>
+
+
+
+```{r, fig.align="center"}
+plotCovariateEffect(mcmc.mr_pma, t1="Laser", t2="Avastin", xlim=NULL, ylim=NULL,
+                    ask=dev.interactive(orNone=TRUE))
+
+```
+
+<br>
+
+There are no significant differences between treatment outcomes in terms of re-treatment rates between Avastin and Laser across various pma's
+
+<br>
+
+
+```{r, fig.align="center"}
+plotCovariateEffect(mcmc.mr_pma, t1="Laser", t2="Eylea", xlim=NULL, ylim=NULL, 
+                    ask=dev.interactive(orNone=TRUE))
+
+```
+
+<br>
+
+UPDATE (22/03/22) - We have a new significant result here in that up to 34.3 weeks PMA, there is a statistically significant reduction in risk of requiring re-treatment associated with Laser treatment versus Avastin. After 34.3 weeks there are no differences. 
+
+<br>
+
+
+
+<br><br>
+
+
+*** 
+
+
+To summarize
+
+At low PMA (upto 35.7 weeks and 34.3 weeks) treatment with Laser is associated with a statistically significant reduction in risk of requiring re-treatment than Lucentis and Avastin respectively.No other differences are seen at higher PMA or with any other treatment comparisons. 
+
+
+***
+
+
+
