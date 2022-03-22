@@ -1,0 +1,883 @@
+---
+title: "ROP bayesian network meta-analysis"
+author: "Aman Josan"
+date: "`r format(Sys.time(), '%d/%m/%y')`"
+output:
+  html_document: 
+    self_contained: no
+    
+    
+
+editor_options: 
+  chunk_output_type: inline
+---
+
+
+<style>
+.column-left{
+  float: left;
+  width: 50%;
+  text-align: left;
+}
+.column-right{
+  float: right;
+  width: 50%;
+  text-align: right;
+}
+</style>
+
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, comment=NA, cache.rebuild = TRUE)
+library(here)
+library(dplyr)
+library(readxl)
+library(robumeta)
+library(gemtc)
+library(rjags)
+library(reshape2)
+library(kableExtra)
+library(metafor)
+library(dmetar)
+library(tidyverse)
+```
+
+
+<br><br>
+
+
+### Type 1 ROP
+<br>
+
+```{r, message=FALSE, warning=FALSE}
+data <- suppressMessages(read_excel(("C:\\Users\\ajosan\\Desktop\\R_scripts\\ROP_meta_analysis\\data\\ROP data  21March 2022 Aman FIREFLYEYE.xlsx"),sheet = 1, range = "b3:ba34", col_names = T))
+
+df <- data %>% select("study",
+                      "treatment-Avastin",
+                      "treatment-Lucentis",
+                      "treatment-Eylea",
+                      "treatment-laser",
+                      "study design", 
+                      "no. Eyes-Avastin",
+                      "no. Eyes-Lucentis",
+                      "no. Eyes-Eylea",
+                      "no. Eyes-laser",
+                      "no. retreated-Avastin",
+                      "no. retreated-Lucentis",
+                      "no. retreated-Eylea",
+                      "no. retreated-laser") 
+
+df[df == "n/a" ] <- NA
+
+df[,c(7:14)] <- suppressWarnings(lapply(df[,c(7:14)], as.numeric))
+
+
+
+
+
+df$`n_responders-Avastin` <- 
+  df$`no. Eyes-Avastin` - df$`no. retreated-Avastin`
+df$`n_responders-Lucentis` <- 
+  df$`no. Eyes-Lucentis` - df$`no. retreated-Lucentis`
+df$`n_responders-Eylea` <- 
+  df$`no. Eyes-Eylea` - df$`no. retreated-Eylea`
+df$`n_responders-laser` <- 
+  df$`no. Eyes-laser` - df$`no. retreated-laser`
+
+df <- df[,-c(11:14)]
+
+
+names(df)[names(df) == 'n_responders-Avastin'] <- 'no. responders-Avastin'
+names(df)[names(df) == 'n_responders-Lucentis'] <- 'no. responders-Lucentis'
+names(df)[names(df) == 'n_responders-Eylea'] <- 'no. responders-Eylea'
+names(df)[names(df) == 'n_responders-laser'] <- 'no. responders-Laser'
+
+
+df <- mutate(df, study_id = 1:nrow(df)) # This adds a study id
+df <- df[c(15,1:14)] # rearranges columns
+
+df_table <- df[,-c(1)]
+### print table of studies
+df_table %>%
+  kbl(caption = "All studies which considered type 1 ROP") %>%
+  kable_classic(full_width = T, html_font = "Cambria", font_size=9) %>%
+  kable_styling("striped")
+
+no_studies <- nrow(df_table)
+no_patients <- sum(df[,c(8:11)], na.rm = T)
+```
+
+<br><br>
+
+Number of studies=`r no_studies`  (after unsuitable studies removed)
+
+
+Number of patients=`r no_patients`
+
+<br><br>
+
+
+
+
+## Event count data and conventional meta-analysis of proportions
+
+
+<br>
+
+
+### Transform data (Dichotomous data)
+
+<br>
+
+Here we define the number of responders as the number of patients treated minus the number of patients requiring re-treatment. Hence the measure of treatment effectiveness we are applying is the number of patients requiring no re-treatment.
+
+
+Since we are dealing with raw prevalence (or event rate) data (i.e. sample size and number of treatment responders) rather than correlations (i.e. Pearsons r for treatment correlations) we need to perform a meta-analysis of proportions.  Most meta-analysis in the literature deal with randomised control trials with correlations and p-values.
+
+
+
+The proportion of treatment responders ($p$) is given by
+
+$$\begin{align}
+p = \frac{x}{n}
+\end{align}$$
+
+<br>
+
+where $x$ is the number of treatment responders in a study and $n$ is the total number treated with that treatment in the study.
+
+
+
+Again data is quite skewed (as is normally the case in number of event data), hence use double arcsine transformation for the conventional meta-analysis again.
+
+
+
+
+```{r, results="hide"}
+### prep dataframe for analysis by having t,n,r columns
+df2 <- df
+
+df2$t.1 <- 1 #"Avastin" 
+df2$t.2 <- 2 #"Lucentis" 
+df2$t.3 <- 3 #"Eylea"
+df2$t.4 <- 4 #"Laser"
+
+df2 <- df2[c(1,2,16:19,8:11,12:15)]
+
+colnames(df2)[7] <- "n.1"
+colnames(df2)[8] <- "n.2"
+colnames(df2)[9] <- "n.3"
+colnames(df2)[10] <- "n.4"
+colnames(df2)[11] <- "r.1"
+colnames(df2)[12] <- "r.2"
+colnames(df2)[13] <- "r.3"
+colnames(df2)[14] <- "r.4"
+
+
+studyID <- df2[,c(1,2)]
+df2 <- suppressWarnings(data.frame(lapply(df2,as.numeric)))
+df2 <- df2[,-c(2)]
+```
+
+```{r}
+### reshape to group by treatment type
+df_long <- reshape(df2, 
+  varying = c("t.1","t.2","t.3","t.4",
+              "n.1","n.2","n.3","n.4",
+              "r.1","r.2","r.3","r.4"), 
+  timevar = "treatment",
+  direction = "long")
+
+df_long <- df_long[,c(1,3,4,5)] %>% arrange(study_id)
+
+df_long <- df_long[!is.na(df_long$r), ]
+df_long <- df_long[!is.na(df_long$n), ]
+
+colnames(df_long) <- c("study_id", "treatment", "sampleSize", "responders") 
+
+df_long <- merge(x = df_long, y = studyID, by = "study_id", all.x = TRUE)
+df_long <- df_long[c(1,5,2,3,4)]
+df_long$treatment <- as.character(df_long$treatment)
+df_long$trt <- ""
+df_long$trt[df_long$treatment=="1"] <- "Avastin"
+df_long$trt[df_long$treatment=="2"] <- "Lucentis"
+df_long$trt[df_long$treatment=="3"] <- "Eylea"
+df_long$trt[df_long$treatment=="4"] <- "Laser"
+df_long <- df_long[c(1,2,3,6,4,5)]
+```
+
+```{r}
+### use metafor package to plot forest, funnel plots and - not available in gemtc
+metafor_data <- df_long
+colnames(metafor_data) <- c("study", "authors","treatment","trt","ni","xi")
+metafor_data <- mutate(metafor_data, id = 1:nrow(metafor_data))
+metafor_all_data <- metafor_data[c(7,1,2,4,6,5)]
+
+
+## split metafor_df into 3 separate trt groups for forest plot
+metafor_Avastin_data <- metafor_all_data %>%
+filter(grepl("Avastin", `trt`)) 
+  
+metafor_Lucentis_data <- metafor_all_data %>%
+filter(grepl("Lucentis", `trt`)) 
+
+metafor_Eylea_data <- metafor_all_data %>%
+filter(grepl("Eylea", `trt`)) 
+
+metafor_Laser_data <- metafor_all_data %>%
+filter(grepl("Laser", `trt`)) 
+
+
+
+### use escalc to find effect size in terms of freeman & Tukey proportions
+metafor_all_df <- metafor::escalc(data=metafor_all_data, measure="PFT", xi=xi, ni=ni, slab=paste(authors, trt), add = 0)
+
+
+### perform mixed effects model on each group
+metafor_all_res <- 
+  metafor::rma(yi,vi,data=metafor_all_df, method = "REML")
+
+metafor_Avastin_res <- 
+  metafor::rma(yi,vi,data=metafor_all_df, method = "REML",  subset=(trt=="Avastin"))
+
+metafor_Lucentis_res <- 
+  metafor::rma(yi,vi,data=metafor_all_df, method = "REML", subset=(trt=="Lucentis"))
+
+metafor_Eylea_res <- 
+  metafor::rma(yi,vi,data=metafor_all_df, method = "REML",  subset=(trt=="Eylea"))
+
+metafor_Laser_res <- 
+  metafor::rma(yi,vi,data=metafor_all_df, method = "REML", subset=(trt=="Laser"))
+```
+
+
+<br>
+
+
+Lets look at a forest plot of each study treatment to see the effect size and variances (here, weights given to each study are inversely related to the variances). 
+```{r,fig.width=10, fig.height=12,fig.align="center"}
+forest(metafor_all_res,
+      transf=transf.ipft.hm, targ=list(ni=metafor_all_df$ni,                                      
+                                       xi=metafor_all_df$xi),
+      top = 1,
+      slab = metafor_all_df$authors,
+      ilab=cbind(metafor_all_df$ni,
+                 metafor_all_df$xi,
+                 metafor_all_df$trt),
+      ilab.xpos=c(-3, -2.3, -1.2), cex = 0.65, ylim=c(-1, 98.5),
+      mlab = "",
+      order=order(metafor_all_df$trt), 
+      rows=c(8:29, 37:41, 50:72, 81:96),
+      xlab="proportion of responders", 
+      xlim = c(-5, 3), showweights = T)
+
+text(-4.6, 101, "First author", pos=1,font = 2, cex = .6)
+text(-3, 101, "No. of px's", pos = 1,font = 2, cex = .6)
+text(-2.3, 101, "Responders", pos = 1,font = 2, cex = .6)
+text(-1.2, 101, "Treatment", pos = 1,font = 2, cex = .6)
+text(1.9, 101, "Weights", pos = 1,font = 2, cex = .6)
+text(2.6, 101, "Proportion [95% CI]", pos = 1,font = 2, cex = .6)
+
+
+### add summary polygons for the four subgroups
+addpoly(metafor_Lucentis_res,row=79,cex=0.75,transf=transf.ipft.hm, targ=list(ni=metafor_Lucentis_res$ni,xi=metafor_Lucentis_res$xi), mlab="")
+addpoly(metafor_Laser_res,row=48,cex=0.75,transf=transf.ipft.hm, targ=list(ni=metafor_Laser_res$ni, xi=metafor_Laser_res$xi), mlab="")
+addpoly(metafor_Eylea_res,row=35,cex=0.75,transf=transf.ipft.hm, targ=list(ni=metafor_Eylea_res$ni, xi=metafor_Eylea_res$xi), mlab="")
+addpoly(metafor_Avastin_res,row=6,cex=0.75,transf=transf.ipft.hm, targ=list(ni=metafor_Avastin_res$ni, xi=metafor_Avastin_res$xi), mlab="")
+
+
+### add text with Q-value, dfs, p-value, and I^2 statistic for subgroups
+#########
+text(-5, 79, cex=0.7, pos=4, bquote(paste("RE Model for Lucentis (Q = ",
+     .(formatC(metafor_Lucentis_res$QE, digits=2, format="f")), ", tau^2 = ", .(formatC(metafor_Lucentis_res$tau2, digits=2, format="f")),
+     ", p = ", .(formatC(metafor_Lucentis_res$QEp, digits=2, format="f")), "; ", I^2, " = ",
+     .(formatC(metafor_Lucentis_res$I2, digits=2, format="f")), "%)")))
+##########
+text(-5, 48, cex=0.7, pos=4, bquote(paste("RE Model for Laser (Q = ",
+     .(formatC(metafor_Laser_res$QE, digits=2, format="f")), ", tau^2 = ", .(formatC(metafor_Laser_res$tau2, digits=2, format="f")),
+     ", p = ", .(formatC(metafor_Laser_res$QEp, digits=2, format="f")), "; ", I^2, " = ",
+     .(formatC(metafor_Laser_res$I2, digits=2, format="f")), "%)")))
+##########
+text(-5, 35, cex=0.7, pos=4, bquote(paste("RE Model for Eylea (Q = ",
+     .(formatC(metafor_Eylea_res$QE, digits=2, format="f")), ", tau^2 = ", .(formatC(metafor_Eylea_res$tau2, digits=2, format="f")),
+     ", p = ", .(formatC(metafor_Eylea_res$QEp, digits=2, format="f")), "; ", I^2, " = ",
+     .(formatC(metafor_Eylea_res$I2, digits=2, format="f")), "%)")))
+##########
+text(-5, 6, cex=0.7, pos=4, bquote(paste("RE Model for Avastin (Q = ",
+     .(formatC(metafor_Avastin_res$QE, digits=2, format="f")), ", tau^2 = ", .(formatC(metafor_Avastin_res$tau2, digits=2, format="f")),
+     ", p = ", .(formatC(metafor_Avastin_res$QEp, digits=2, format="f")), "; ", I^2, " = ",
+     .(formatC(metafor_Avastin_res$I2, digits=2, format="f")), "%)")))
+
+###########
+text(-5, -1.5, pos=4, cex=0.75, bquote(paste("RE Model for All Studies (Q = ",
+     .(formatC(metafor_all_res$QE, digits=2, format="f")), ", tau^2 = ", .(formatC(metafor_all_res$tau2, digits=2, format="f")),
+     ", p = ", .(formatC(metafor_all_res$QEp, digits=2, format="f")), "; ", I^2, " = ",
+     .(formatC(metafor_all_res$I2, digits=2, format="f")), "%)")))
+```
+
+
+<br>
+
+Hence, overall, taking all treatments into account, a predicted 85% (81%-89%) of patients with type 1 ROP would likely require no re-treatment.
+
+
+(Note, Q, tau, and $I$ and the p-values here refer to the statistical significance of the presence of heterogeneity).
+
+
+<br>
+
+
+Look at individual treatment statistics by pooling all studies for each treatment and performing four separate meta-analyses using a random effects model. 
+
+
+
+As we are most interested in a comparison of treatment effects we need to perform a Bayesian analysis (see later).
+
+<br>
+
+<div class="column-left">
+```{r}
+Avastin_stats <- data.frame(capture.output(metafor_Avastin_res)) %>%
+  kbl(caption = "Avastin") %>%
+  kable_classic(full_width = F, html_font = "Cambria", font_size=12)
+Avastin_stats
+
+Avastin_pred <- predict(metafor_Avastin_res, transf=transf.ipft.hm, targ=list(ni=metafor_Avastin_res$ni, xi=metafor_Avastin_res$xi))
+print(Avastin_pred)
+```
+</div>
+<div class="column-right">
+```{r}
+Lucentis_stats <- data.frame(capture.output(metafor_Lucentis_res)) %>%
+  kbl(caption = "Lucentis") %>%
+  kable_classic(full_width = F, html_font = "Cambria", font_size=12)
+Lucentis_stats
+
+Lucentis_pred <- predict(metafor_Lucentis_res, transf=transf.ipft.hm, targ=list(ni=metafor_Lucentis_res$ni, xi=metafor_Lucentis_res$xi))
+print(Lucentis_pred)
+```
+</div>
+<br><br>
+<div class="column-left">
+```{r}
+Eylea_stats <- data.frame(capture.output(metafor_Eylea_res)) %>%
+  kbl(caption = "Eylea") %>%
+  kable_classic(full_width = F, html_font = "Cambria", font_size=12)
+Eylea_stats
+
+Eylea_pred <- predict(metafor_Eylea_res, transf=transf.ipft.hm, targ=list(ni=metafor_Eylea_res$ni, xi=metafor_Eylea_res$xi))
+print(Eylea_pred)
+```
+</div>
+<div class="column-right">
+```{r}
+Laser_stats <- data.frame(capture.output(metafor_Laser_res)) %>%
+  kbl(caption = "Laser") %>%
+  kable_classic(full_width = F, html_font = "Cambria", font_size=12)
+Laser_stats
+
+Laser_pred <- predict(metafor_Laser_res, transf=transf.ipft.hm, targ=list(ni=metafor_Laser_res$ni, xi=metafor_Laser_res$xi))
+print(Laser_pred)
+```
+</div>
+
+
+
+<br><br>
+
+
+As with zone 1 ROP, the above stats show summary effect sizes (all have significance p<0.05 under the model results heading).
+
+<br>
+
+Magnitude of effect sizes:
+
+
+* Avastin effect size (predicted proportion):  88.0% [80.6 - 93.9]
+* Lucentis effect size (predicted proportion):  74.0%  [62.7 - 84.1]
+* Eylea effect size (predicted proportion):  80.7%  [62.0 - 94.4] 
+* Laser effect size (predicted proportion):  89.9%  [84.6 - 94.3]
+
+
+<br>
+
+
+The above for Avastin predicts that treatment with Avastin would likely result in approx 88% of patients with type 1 ROP requiring no re-treatment.
+
+
+
+<br>
+
+Now we break down which studies contributed most to the overall result above and display with a Baujat plot 
+
+<br>
+
+```{r,fig.width=11, fig.height=7,fig.align="center"}
+b_res_df <- unite(metafor_all_df, newcol, c(authors, trt), remove=FALSE)
+b_res <- metafor::rma(yi, vi, data=b_res_df, slab=newcol)
+baujat(b_res, symbol="slab", cex=0.5, grid = F, main="Baujat plot")
+```
+
+
+<br>
+
+Here we can see a potential outliers. Perhaps worth looking at chen 2018a (Avastin) study to see if any irregularities in study methods here also. - Emer checked and no irregularities found. Seems like a genuine outlier.
+
+
+<br>
+
+
+Recall this is a conventional frequentist meta-analysis and so does not compare relative effect sizes of treatments. Each number should be taken in isolation and is predicted based on the study results for that treamtment alone. The percentages should not be used to pit one drug against another as the study sample sizes and variances are not equal between treatments. 
+
+ 
+<br>
+
+
+***
+
+
+In summary: P-values do not provide information regarding effect size. In Bayesian analysis, however, alternative models are compared resulting in relative effect sizes.
+
+
+***
+
+
+
+<br><br>
+
+## Heterogeneity 
+
+<br>
+
+Again the stats above show there is significant (p<0.05) heterogeneity in studies reporting Avastin, Lucentis and Laser outcomes suggesting the studies in each subgroup are significantly different from each other. 
+
+
+Tests for heterogeneity in studies reporting Eylea outcomes do not show significance and so the null hypothesis of no significant heterogeneity cannot be rejected. 
+
+
+Again, the number of Eylea studies here are almost certainly too low to make firm conclusions like this and with more Eylea studies it is likely heterogeneity would increase to significant levels. This is hence a clear example of p>0.05 implying insensitive data rather than no statistically significant heterogeneity. 
+
+
+
+<br>
+
+
+***
+
+
+In summary: Significant heterogeneity implies there is no common single true effect size associated with a treatment across different studies of the same drug and that the differences between study results are beyond those attributable to chance/random sampling. Hence, we assume that there is not only one true effect size, but a distribution of true effect sizes. This distribution is simulated later using a Bayesian analysis.
+
+
+***
+
+<br><br>
+
+
+## Funnel plot
+
+
+```{r}
+### funnel plot to show if asymmetry - this would indicate bias towards small studies - not publication bias. Publication bias includes small study bias but also other things as well.
+funnel <- metafor::funnel(metafor_all_res)
+regtest(metafor_all_res)
+```
+
+
+<br>
+
+Again visually there is no obvious asymmetry and Egger's regression test confirms that there is no significant asymmetry (p > 0.05). 
+
+
+So again it can be said from this funnel plot and Egger's regression that there is no evidence of small study bias.
+
+
+<br><br>
+
+
+
+Again I have looked into the power associated with these studies. Below is a sunset power-enhanced funnel plot which uses the standard error and effect sizes to calculate the power for all studies. Used the lower bound of the summary effect size from the forest plot above (0.81).
+
+
+<br>
+
+```{r include=FALSE}
+### attaches actual power values onto metafor_all_df dataframe
+s_power <- function(se, true_effect, sig_level) {
+  
+  (1 - stats::pnorm(stats::qnorm(1 - sig_level/2) * 
+                      se, abs(true_effect), se)) + 
+    stats::pnorm(stats::qnorm(sig_level/2) * 
+                   se, abs(true_effect), se)
+}
+
+metafor_all_df$power <- s_power(se = funnel$y, 
+               true_effect = 0.81, 
+               sig_level = 0.05)
+```
+
+
+
+```{r}
+### funnel plot to show if asymmetry - this would indicate bias towards small studies - not publication bias. Publication bias includes small study bias but also other things as well.- lower CI value from forest plot above used for effect size
+
+prop <- metafor_all_df$xi/metafor_all_df$ni
+se_res <- funnel$y
+rma_res <- cbind(prop, se_res)
+
+
+metaviz::viz_sunset(
+  rma_res,
+  y_axis = "se",
+  sig_level = 0.05,
+  power_stats = TRUE,
+  power_contours = "continuous",
+  contours = T,
+  sig_contours = TRUE,
+  text_size = 3,
+  point_size = 2,
+  true_effect = 0.81,
+)
+
+
+```
+
+
+<br>
+
+Once again all studies have extremely high power (90+ percent) giving us ample confidence that all statistically non-significant results are valid as statements of "no difference" rather than being due to insensitive/insufficient data.
+
+
+
+
+
+
+
+
+<br><br>
+
+
+
+
+
+## Bayesian network meta-analysis
+<br>
+
+### Summary of network
+<br>
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+df_long2 <- df_long[c(2,4,5,6)]
+colnames(df_long2)[2] <- "treatment"
+
+### for relative risk better to use non-responders rather than responders
+df_long2 <- mutate(df_long2, responders=sampleSize-responders)
+
+network <- mtc.network(df_long2, description = "Bayesian NMA")
+```
+
+```{r}
+summary(network)
+#summary(anohe)
+```
+
+<br>
+<br>
+
+Network plot (line thickness connecting nodes denotes the number studies for each comparison)
+```{r}
+plot(network)
+```
+
+
+
+
+
+<br>
+
+
+```{r, include=FALSE}
+set.seed(42)
+
+model <- mtc.model(network, likelihood = "binom", link = "log", linearModel = "random", n.chain = 4, type = "consistency")
+
+#################################################################
+# By default, the model will have 4 chains - generate a seed for each - see gemtc documentation
+seeds <- sample.int(4, n = .Machine$integer.max)
+# Apply JAGS RNG settings to each chain
+model$inits <- mapply(c, model$inits, list(
+list(.RNG.name="base::Wichmann-Hill", .RNG.seed=seeds[1]),
+list(.RNG.name="base::Marsaglia-Multicarry", .RNG.seed=seeds[2]),
+list(.RNG.name="base::Super-Duper", .RNG.seed=seeds[3]),
+list(.RNG.name="base::Mersenne-Twister", .RNG.seed=seeds[4])), SIMPLIFY=FALSE)
+#################################################################
+
+mcmc <- mtc.run(model, 
+                n.adapt = 8000, 
+                n.iter = 200000, 
+                thin = 10)
+#summary(mcmc)
+```
+
+
+<br>
+
+
+MCMC validation plots and inconsistency analysis performed. All is ok and no network inconsistencies are evident
+
+
+```{r,fig.width=8, fig.height=12,fig.align="center"}
+plot(mcmc)
+```
+
+<br>
+<br>
+
+Apart from visual inspection of the trace plots, further validation in the form of a Gelman-Rubin-Brooks plots shows the Potential Scale Reduction Factor (PSRF) is within acceptable limits (<1.05) showing adequate MCMC chain convergence has been achieved (i.e. stable results)
+
+
+```{r, echo=FALSE, fig.width=6, fig.height=6}
+gelman.plot(mcmc)
+gelman.diag(mcmc, multivariate = F)
+PSRF <- gelman.diag(mcmc)$mpsrf
+print(paste0("PSRF = ", round(PSRF, digits = 4)))
+```
+
+
+<br>
+<br>
+<br>
+
+
+
+```{r eval=FALSE}
+nodesplit <- mtc.nodesplit(network,     
+                           linearModel = "random",
+                           n.adapt = 8000,
+                           n.iter = 200000,
+                           thin = 10)
+```
+
+```{r eval=FALSE}
+summary(nodesplit)
+names(nodesplit)
+```
+
+
+
+
+<br><br>
+
+
+# Summary of results of Bayesian network analysis:
+
+
+<br>
+
+
+## MCMC simulation summary
+
+<br>
+
+In the following analysis we are again using a risk ratio (or relative risk) as the measure of liklihood. 
+
+
+<br>
+
+
+
+
+<br>
+
+
+A summary of the MCMC simulation
+```{r}
+summary(mcmc)
+```
+
+
+<br>
+<br>
+<br>
+
+
+# Relative effect table 
+
+<br>
+
+this is the main table of interest comparing all treatment options with results derived from direct and indirect methods:
+
+
+<br>
+
+
+
+
+
+
+```{r}
+###### Taken relative.effect.table function from GEMTC website (google function). Then adjusted the 'formatNumber bit to add exp(x) to transform log RR to RR 
+
+relative.effect.table_new <- function(result, covariate=NA) {
+  ts <- as.character(result[['model']][['network']][['treatments']][['id']])
+  tbl <- array(NA, dim=c(length(ts), length(ts), 3), dimnames=list(ts, ts, c("2.5%", "50%", "97.5%")))
+  comps <- combn(ts, 2)
+
+  for (i in 1:ncol(comps)) {
+    comp <- comps[,i]
+    samples <- as.matrix(relative.effect(result, comp[1], comp[2], preserve.extra=FALSE, covariate=covariate)$samples)
+    q <- quantile(samples, prob=c(0.025, 0.5, 0.975))
+    tbl[comp[1], comp[2],] <- unname(q)
+    q.inv <- c(-q[3], -q[2], -q[1])
+    tbl[comp[2], comp[1],] <- unname(q.inv)
+  }
+
+  attr(tbl, "model") <- result[['model']]
+  attr(tbl, "covariate") <- covariate
+  class(tbl) <- "mtc.relative.effect.table"
+
+  tbl
+}
+
+relative.effect.table.to.matrix <- function(x, formatNumber=formatC) {
+  y <- apply(x, c(1,2), function(x) {
+    if (all(!is.na(x))) {
+      paste0(formatNumber(round(exp(x[2]),2)), " (", formatNumber(round(exp(x[1]),2)), ", ", formatNumber(round(exp(x[3]),2)), ")")
+    } else {
+      NA
+    }
+  })
+  diag(y) <- rownames(x)
+  y
+}
+
+as.data.frame.mtc.relative.effect.table <- function(x, ...) {
+  as.data.frame(relative.effect.table.to.matrix(x, paste), stringsAsFactors=FALSE)
+}
+
+print.mtc.relative.effect.table <- function(x, ...) {
+  #scale.log <- if (ll.call('scale.log', attr(x, 'model'))) 'Log ' else ''
+  scale.name <- ll.call('scale.name', attr(x, 'model'))
+  y <- relative.effect.table.to.matrix(x)
+
+  cat(paste0(scale.name, " (95% CrI)\n\n"))
+  write.table(format(y, justify="centre"), quote=FALSE, row.names=FALSE, col.names=FALSE)
+}
+
+
+
+rel_effect <- relative.effect.table_new(mcmc, covariate=NA) 
+print(rel_effect)
+```
+
+
+
+
+<br> 
+
+***
+
+
+N.B. 
+
+
+Interpretation of Risk Ratio - ratio of probabilites (remember to inverse log above first)
+
+
+* RR < 1: risk of requiring re-treatment lower with treatment 1 than treatment 2
+* RR = 1: risk of requiring re-treatment the same between treatment 1 and treatment 2
+* RR > 1: risk of requiring re-treatment higher with treatment 1 than treatment 2
+
+
+
+<br><br><br>
+
+
+## Rankings
+
+
+Rank probability to answer which treatment performs best
+
+
+```{r,fig.align="center"}
+ranks <- rank.probability(mcmc, preferredDirection = -1)
+rankquant <- rank.quantiles(ranks, probs=c("2.5%"=0.025, "50%"=0.5, "97.5%"=0.975))
+ranks
+```
+
+
+```{r, fig.align="center", fig.cap="A rank plot illustrating empirical probabilities that each treatment is ranked 1st through 4th (left to right)."}
+plot(ranks, beside=TRUE) # plot a 'rankogram'
+```
+
+
+
+<br><br>
+
+Laser is clear first in ranking here
+
+
+
+Use surface under the cumulative ranking (SUCRA) measure to better quantify the probability rankings (takes ranking overlap into account)
+
+<br>
+
+```{r,fig.align="center"}
+print(gemtc::sucra(ranks), digits=3)
+#plot(dmetar::sucra(ranks, lower.is.better = F))
+```
+
+<br>
+
+This again suggests Laser is ranked as the most effective treatment (i.e. lowest risk ratio meaning lowest risk of requiring re-treatment) according to the studies involving treatment for type 1 ROP. Here Eylea is ranked second, Avastin ranked third and Lucentis forth. Again these rankings are not very useful unless all differences between treatment modalities are statistically significant which they are not in this case. Hence best not to use SUCRA.
+
+
+<br>
+
+
+We can look at another forest plot to visualise results by comparing treatments.
+ 
+
+```{r, fig.width=8, fig.height=14,fig.align="center",fig.asp=0.30}
+gemtc::forest(relative.effect(mcmc, t1 = "Laser"))
+gemtc::forest(relative.effect(mcmc, t1 = "Lucentis"))
+gemtc::forest(relative.effect(mcmc, t1 = "Eylea"))
+gemtc::forest(relative.effect(mcmc, t1 = "Avastin"))
+```
+
+
+
+Recall lower risk ratio here is better (i.e. lower risk of requiring re-treatment)
+
+
+<br><br>
+
+
+Here, we have one comparison that reaches statistical significance. Treatment with Laser has statistically significantly less risk of requiring subsequent re-treatment than after Lucentis treatments. All other comparisons found no evidence of statistically significant differences.
+
+
+<br><br>
+
+
+***
+
+
+Here we can say with significance:
+
+
+* Treatment with Laser is associated with 62% less risk of requiring re-treatment than treatment with Lucentis  for type 1 ROP. This does not take potential moderators into account. We shall look at this later.
+<br>
+
+N.b.  Avastin is no longer statistically significantly different to Laser
+
+
+***
+
+
+
+<br><br><br>
+
+
+
+
