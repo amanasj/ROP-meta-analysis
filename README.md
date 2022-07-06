@@ -36,7 +36,7 @@ All Rmarkdown files can be run using Rstudio and no changes to directory paths a
 
 
 
-WARNING:: run each code chunk one at a time. Depending on your machine the whole Rmarkdown file can take a long time to process, especially the Bayesian analysis. In particular the nodesplit analysis takes an extremely long time and is very processor intensive. I have set this chunk off by default but you can turn it on and run it by changing the chunk header to "eval=TRUE"
+WARNING :: run each code chunk one at a time. Depending on your machine the whole Rmarkdown file can take a long time to process, especially the Bayesian analysis. In particular the nodesplit analysis takes an extremely long time and is very processor intensive. I have set this chunk off by default but you can turn it on and run it by changing the chunk header to "eval=TRUE"
 
 
 
