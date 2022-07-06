@@ -1,19 +1,22 @@
 # ROP-meta-analysis
 
 
-Supplementary code used for journal submission: 
-
-A Network Meta-Analysis Comparing the Efficacies of Intravitreal Bevacizumab, Ranibizumab, Aflibercept, and Laser Treatment for Retinopathy of Prematurity
-by Emer Chang, Amandeep S Josan, Ravi Purohit, Chetan K Patel, Kanmin Xue
+Supplementary code used for Ophthalmology journal article: 
 
 
-
-
-I have included three Rmarkdown files containing the complete code and comments used to perform a zone 1, type 1 and type 1 + potential moderator meta-analyses 
+A Network Meta-Analysis of Retreatment Rates following Bevacizumab, Ranibizumab, Aflibercept and Laser for Retinopathy of Prematurity
+by 
+Emer T Chang, Amandeep S Josan, Ravi Purohit, Chetan K Patel, Kanmin Xue
 
 
 
-All Rmarkdown files can be run using R 
+
+I have included three Rmarkdown files containing the complete code with analysis commentary used to perform a zone 1, type 1 and type 1 + moderator meta-analyses.
+The spreadsheet containing the raw data extracted from each journal article contained in the meta-analaysis is also included.
+
+
+
+All Rmarkdown files can be run using Rstudio
 
 
 
