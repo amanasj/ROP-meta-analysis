@@ -29,12 +29,12 @@ The spreadsheet containing the raw data used in the meta-analaysis is also inclu
 
 
 All Rmarkdown files can be run using Rstudio and no changes to directory paths are needed. Each Rmarkdown file should run correctly as long as no files are removed or rearranged from the top folder.
-.
-.
-.
-.
-.
-.
+
+
+
+
+
+
 
 WARNING:: run each code chunk one at a time. Depending on your machine the whole Rmarkdown file can take a long time to process, especially the Bayesian analysis. In particular the nodesplit analysis takes an extremely long time and is very processor intensive. I have set this chunk off by default but you can turn it on and run it by changing the chunk header to "eval=TRUE"
 
