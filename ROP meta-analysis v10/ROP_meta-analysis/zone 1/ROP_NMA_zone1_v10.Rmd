@@ -1,0 +1,1004 @@
+---
+title: "ROP meta-analysis"
+author: "Aman Josan"
+date: "`r format(Sys.time(), '%d/%m/%y')`"
+output:
+  html_document: 
+    self_contained: yes
+    
+    
+
+editor_options: 
+  chunk_output_type: inline
+---
+
+<style>
+.column-left{
+  float: left;
+  width: 50%;
+  text-align: left;
+}
+.column-right{
+  float: right;
+  width: 50%;
+  text-align: right;
+}
+</style>
+
+
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, comment=NA, cache.rebuild = TRUE)
+library(dplyr)
+library(readxl)
+library(robumeta)
+library(gemtc)
+library(rjags)
+library(reshape2)
+library(kableExtra)
+library(metafor)
+library(dmetar)
+library(tidyverse)
+library(here)
+```
+
+
+<br><br>
+
+
+### Zone 1 ROP
+<br>
+
+```{r, message=FALSE, warning=FALSE}
+
+data <- suppressMessages(read_excel(here("./data/ROP data 29122022-V9.xlsx"),sheet = 2, range = "b3:aT14", col_names = T))
+
+
+df <- data %>% select("study",
+                      "treatment-Avastin",
+                      "treatment-Lucentis",
+                      "treatment-Eylea",
+                      "treatment-laser",
+                      "study design", 
+                      "no. Eyes-Avastin",
+                      "no. Eyes-Lucentis",
+                      "no. Eyes-Eylea",
+                      "no. Eyes-laser",
+                      "no. retreated-Avastin",
+                      "no. retreated-Lucentis",
+                      "no. retreated-Eylea",
+                      "no. retreated-laser") 
+
+df[df == "n/a" ] <- NA
+
+df[,c(7:14)] <- suppressWarnings(lapply(df[,c(7:14)], as.numeric))
+
+
+
+df$`n_responders-Avastin` <- df$`no. Eyes-Avastin` - df$`no. retreated-Avastin`
+df$`n_responders-Lucentis` <- df$`no. Eyes-Lucentis` - df$`no. retreated-Lucentis`
+df$`n_responders-Eylea` <- df$`no. Eyes-Eylea` - df$`no. retreated-Eylea`
+df$`n_responders-laser` <- df$`no. Eyes-laser` - df$`no. retreated-laser`
+
+df <- df[,-c(11:14)]
+
+
+#### change from trade names to drug names 
+#Avastin - Bevacizumab
+#Lucentis - Ranibizumab
+#Eylea - Aflibercept
+#Laser
+names(df)[names(df) == 'treatment-Avastin'] <- 'treatment-Bevacizumab'
+names(df)[names(df) == 'treatment-Lucentis'] <- 'treatment-Ranibizumab'
+names(df)[names(df) == 'treatment-Eylea'] <- 'treatment-Aflibercept'
+names(df)[names(df) == 'treatment-laser'] <- 'treatment-Laser'
+names(df)[names(df) == 'no. Eyes-Avastin'] <- 'no. Eyes-Bevacizumab'
+names(df)[names(df) == 'no. Eyes-Lucentis'] <- 'no. Eyes-Ranibizumab'
+names(df)[names(df) == 'no. Eyes-Eylea'] <- 'no. Eyes-Aflibercept'
+names(df)[names(df) == 'no. Eyes-laser'] <- 'no. Eyes-Laser'
+names(df)[names(df) == 'n_responders-Avastin'] <- 'no. responders-Bevacizumab'
+names(df)[names(df) == 'n_responders-Lucentis'] <- 'no. responders-Ranibizumab'
+names(df)[names(df) == 'n_responders-Eylea'] <- 'no. responders-Aflibercept'
+names(df)[names(df) == 'n_responders-laser'] <- 'no. responders-Laser'
+
+
+df <- mutate(df, study_id = 1:nrow(df)) # This adds a study id
+df <- df[c(15,1:14)] # rearranges columns
+
+df_table <- df[,-c(1)]
+### print table of studies
+df_table %>%
+  kbl(caption = "All studies which considered zone 1 ROP") %>%
+  kable_classic(full_width = T, html_font = "Cambria", font_size=9) %>%
+  kable_styling("striped")
+
+no_studies <- nrow(df_table)
+no_patients <- sum(df[,c(8:11)], na.rm = T)
+
+```
+
+
+<br><br>
+
+Number of studies=`r no_studies`
+
+
+Number of patients=`r no_patients`
+
+<br><br>
+
+
+
+### Plan
+
+
+***
+
+
+Most Meta-analyses involve pooling studies of randomized controlled trials in which a control (or placebo) is employed. Treatments effectiveness are then compared to this control via a log odds ratio or some similar measure. I have  used the raw effect counts as a measure of proportional effect size and run this as a meta-analysis of proportions.
+
+
+
+I have generally separated this analysis into 2 separate parts:
+
+
+
+1) Conventional frequentist meta-analysis via a simple treatment subset analysis. Here we pool of all randomized and non-randomized retrospective studies and consider each treatment in each study as a single arm study, hence each study in the table above (all two arm studies) are separated into one arm studies as shown in the forest plot below. Here we can then simply consider the raw data of treatment outcome rates/responders and sample size in a proportional meta-analysis. The results of this meta-analysis then shows the effectiveness of each treatment. This does not compare treatments and simply shows each treatment statistics in isolation.
+
+
+2) Bayesian hierarchical model meta-analysis considers the studies as their original two-arm (or three-arm) studies. Intensive computer modelling is performed to estimate distributions of treatment comparisons and then infer via a network any missing treatment arms (in our case laser vs Eylea - n.b. no longer have an eylea study). These are then verified by inconsistency analysis. Here, again we simply pool The results from RCT and retrospective studies. This assumes that the retrospective studies are of high quality (i.e. did not compare two treatments with unequal methodology or biases) such that comparisons with RCT studies can be made. Besides inferring missing treatment comparisons, the results of this network meta-analysis allow for comparisons of relative treatment effect to be made i.e. head to head treatment comparisons.
+
+
+<br>
+
+
+
+***
+
+
+## Event count data and conventional meta-analysis of proportions
+
+
+<br><br>
+
+
+### Transform data (Dichotomous data)
+
+<br>
+
+Here we define the number of responders as the number of patients treated minus the number of patients requiring retreatment. Hence the measure of treatment effectiveness we are applying is the number of patients requiring no retreatment.
+
+
+Since we are dealing with raw prevalence (or event rate) data (i.e. sample size and number of treatment responders) rather than correlations (i.e. Pearsons r for treatment correlations) we need to perform a meta-analysis of proportions.  Most meta-analysis in the literature deal with correlations and p-values.
+
+
+
+The proportion of treatment responders ($p$) is given by
+
+$$\begin{align}
+p = \frac{x}{n}
+\end{align}$$
+
+<br>
+
+where $x$ is the number of treatment responders in a study and $n$ is the total number treated with that treatment in the study.
+
+
+For observed proportions that are around 0.5, i.e. where half the patients had a positive response (more specifically 0.2 - 0.8), if the number of studies is sufficiently large, the data can be assumed to be approximately normally distributed. In this scenario it has been shown that using raw proportions as a measure of the effect size (along with the associated variances) is adequete for a meta-analysis. 
+
+
+However, if we look at our studies, many studies have a treatment response proportion equal to 1 (all patients treated responded well - no retreatment needed) and one study had a proportion effect size of zero (no treated patients responded well - all needed retreatment). This skewed data with values of 0 & 1 lie outside of the 0.2 - 0.8 proportions required for the assumption of normally distributed data and so the use of raw proportions is not a valid effect size measure in a meta-analysis in our case.
+
+
+For skewed data such as this we need to transform the data to become approximately normal (or as normal as we can) to enhance the validity of the subsequent statistical analysis. One method is to use logit (log odds ratio) to transform the data. This is what I did in the previous version of this meta-analysis. However, logit transform for cases with 0% or 100% success also leads to issues. Specifically calculating variances in these cases leads to a "divide by zero" scenario causing variances to become undefined. Since variances in a meta-analysis are profoundly important to assess heterogeneity and comparative effect sizes, a logit transformation of our data is undesirable.
+
+
+These problems can be overcome by employing a variance stabilising transformation known as the double arcsine transformation proposed by Freeman & Tukey (1950). Once transformed, data can be analysed and then converted back to proportions for reporting. This is pretty commonly done for skewed proportional data so nothing too controversial here except in cases where sample sizes between various studies varies so wildly that the inverse of the freeman tukey transform used to convert back to proportions gives innaccurate estimates due to the use of a harmonic mean (mean sample size) that doesn't accurately reflect the actaul sample size for all studies. (see ref: Seriously misleading results using inverse of Freeman-Tukey double arcsine transformation in meta-analysis of single proportions by Guido Schwarzer et al.). This is not a problem in our case as sample sizes in all studies are relatively similar so the harmonic mean is a reasonable estimate for all inverse transorfmations. 
+
+
+
+
+```{r, results="hide"}
+### prep dataframe for analysis by having t,n,r columns
+df2 <- df
+
+df2$t.1 <- 1 #"Avastin - Bevacizumab" 
+df2$t.2 <- 2 #"Lucentis - Ranibizumab" 
+df2$t.3 <- 3 #"Eylea - Aflibercept"
+df2$t.4 <- 4 #"Laser"
+
+df2 <- df2[c(1,2,16:19,8:11,12:15)]
+
+colnames(df2)[7] <- "n.1"
+colnames(df2)[8] <- "n.2"
+colnames(df2)[9] <- "n.3"
+colnames(df2)[10] <- "n.4"
+colnames(df2)[11] <- "r.1"
+colnames(df2)[12] <- "r.2"
+colnames(df2)[13] <- "r.3"
+colnames(df2)[14] <- "r.4"
+
+
+studyID <- df2[,c(1,2)]
+df2 <- suppressWarnings(data.frame(lapply(df2,as.numeric)))
+df2 <- df2[,-c(2)]
+```
+
+```{r}
+### reshape to group by treatment type
+df_long <- reshape(df2, 
+  varying = c("t.1","t.2","t.3","t.4",
+              "n.1","n.2","n.3","n.4",
+              "r.1","r.2","r.3","r.4"), 
+  timevar = "treatment",
+  direction = "long")
+
+df_long <- df_long[,c(1,3,4,5)] %>% arrange(study_id)
+
+df_long <- df_long[!is.na(df_long$r), ]
+df_long <- df_long[!is.na(df_long$n), ]
+
+colnames(df_long) <- c("study_id", "treatment", "sampleSize", "responders") 
+
+df_long <- merge(x = df_long, y = studyID, by = "study_id", all.x = TRUE)
+df_long <- df_long[c(1,5,2,3,4)]
+df_long$treatment <- as.character(df_long$treatment)
+df_long$trt <- ""
+df_long$trt[df_long$treatment=="1"] <- "Bevacizumab"
+df_long$trt[df_long$treatment=="2"] <- "Ranibizumab"
+df_long$trt[df_long$treatment=="3"] <- "Aflibercept"
+df_long$trt[df_long$treatment=="4"] <- "Laser"
+df_long <- df_long[c(1,2,3,6,4,5)]
+```
+
+```{r}
+### use metafor package to plot forest, funnel plots and - not available in gemtc
+metafor_data <- df_long
+colnames(metafor_data) <- c("study", "authors","treatment","trt","ni","xi")
+metafor_data <- mutate(metafor_data, id = 1:nrow(metafor_data))
+metafor_all_data <- metafor_data[c(7,1,2,4,6,5)]
+
+
+## split metafor_df into 3 separate trt groups for forest plot
+metafor_Avastin_data <- metafor_all_data %>%
+filter(grepl("Bevacizumab", `trt`)) 
+  
+metafor_Lucentis_data <- metafor_all_data %>%
+filter(grepl("Ranibizumab", `trt`)) 
+
+metafor_Eylea_data <- metafor_all_data %>%
+filter(grepl("Aflibercept", `trt`)) 
+
+metafor_Laser_data <- metafor_all_data %>%
+filter(grepl("Laser", `trt`)) 
+
+
+
+### use escalc to find effect size in terms of freeman & Tukey proportions
+metafor_all_df <- metafor::escalc(data=metafor_all_data, measure="PFT", xi=xi, ni=ni, slab=paste(authors, trt), add = 0)
+
+
+### perform mixed effects model on each group
+metafor_all_res <- 
+  metafor::rma(yi,vi,data=metafor_all_df, method = "REML")
+
+metafor_Avastin_res <- 
+  metafor::rma(yi,vi,data=metafor_all_df, method = "REML", subset=(trt=="Bevacizumab"))
+
+metafor_Lucentis_res <- 
+  metafor::rma(yi,vi,data=metafor_all_df, method = "REML", subset=(trt=="Ranibizumab"))
+
+metafor_Eylea_res <- 
+  metafor::rma(yi,vi,data=metafor_all_df, method = "REML", subset=(trt=="Aflibercept"))
+
+metafor_Laser_res <- 
+  metafor::rma(yi,vi,data=metafor_all_df, method = "REML", subset=(trt=="Laser"))
+```
+
+
+<br>
+
+
+Lets look at a forest plot of each study treatment to see the effect size and variances (here, weights given to each study are inversely related to the variances). 
+```{r,fig.width=8, fig.height=10,fig.align="center"}
+forest(metafor_all_res,
+      transf=transf.ipft.hm, targ=list(ni=metafor_all_df$ni, xi=metafor_all_df$xi),
+      top = 1,
+      slab = metafor_all_df$authors,
+      ilab=cbind(metafor_all_df$ni,
+                 metafor_all_df$xi,
+                 metafor_all_df$trt),
+      ilab.xpos=c(-3.4, -2.7, -1.6), cex = 0.7, ylim=c(-1, 42.5),
+      mlab = "",
+      order= trt,
+      rows=c(5:5, 10:18, 23:32, 37:41),
+      xlab="proportion of responders", 
+      xlim = c(-5, 3), showweights = T)
+
+text(-4.6, 44, "First author", pos=1,font = 2, cex = .6)
+text(-3.4, 44, "No. of px's", pos = 1,font = 2, cex = .6)
+text(-2.7, 44, "Responders", pos = 1,font = 2, cex = .6)
+text(-1.6, 44, "Treatment", pos = 1,font = 2, cex = .6)
+text(1.7, 44, "Weights", pos = 1,font = 2, cex = .6)
+text(2.5, 44, "Proportion [95% CI]", pos = 1,font = 2, cex = .6)
+
+
+### add summary polygons for the four subgroups
+addpoly(metafor_Lucentis_res,row=35.5,cex=0.75,transf=transf.ipft.hm, targ=list(ni=metafor_Lucentis_res$ni,xi=metafor_Lucentis_res$xi), mlab="")
+addpoly(metafor_Laser_res,row=21.5,cex=0.75,transf=transf.ipft.hm, targ=list(ni=metafor_Laser_res$ni, xi=metafor_Laser_res$xi), mlab="")
+addpoly(metafor_Avastin_res,row=8.5,cex=0.75,transf=transf.ipft.hm, targ=list(ni=metafor_Avastin_res$ni, xi=metafor_Avastin_res$xi), mlab="")
+addpoly(metafor_Eylea_res,row=3.5,cex=0.75,transf=transf.ipft.hm, targ=list(ni=metafor_Eylea_res$ni, xi=metafor_Eylea_res$xi), mlab="")
+
+### add text with Q-value, dfs, p-value, and I^2 statistic for subgroups
+text(-5, 35.5, cex=0.7, pos=4, bquote(paste("RE Model for Ranibizumab (Q = ",
+     .(formatC(metafor_Lucentis_res$QE, digits=2, format="f")), ", tau^2 = ", .(formatC(metafor_Lucentis_res$tau2, digits=2, format="f")),
+     ", p = ", .(formatC(metafor_Lucentis_res$QEp, digits=2, format="f")), "; ", I^2, " = ",
+     .(formatC(metafor_Lucentis_res$I2, digits=2, format="f")), "%)")))
+
+text(-5, 21.5, cex=0.7, pos=4, bquote(paste("RE Model for Laser (Q = ",
+     .(formatC(metafor_Laser_res$QE, digits=2, format="f")), ", tau^2 = ", .(formatC(metafor_Laser_res$tau2, digits=2, format="f")),
+     ", p = ", .(formatC(metafor_Laser_res$QEp, digits=2, format="f")), "; ", I^2, " = ",
+     .(formatC(metafor_Laser_res$I2, digits=2, format="f")), "%)")))
+
+text(-5, 8.5, cex=0.7, pos=4, bquote(paste("RE Model for Bevacizumab (Q = ",
+     .(formatC(metafor_Avastin_res$QE, digits=2, format="f")), ", tau^2 = ", .(formatC(metafor_Avastin_res$tau2, digits=2, format="f")),
+     ", p = ", .(formatC(metafor_Avastin_res$QEp, digits=2, format="f")), "; ", I^2, " = ",
+     .(formatC(metafor_Avastin_res$I2, digits=2, format="f")), "%)")))
+
+text(-5, 3.5, cex=0.7, pos=4, bquote(paste("RE Model for Aflibercept (Q = ",
+     .(formatC(metafor_Eylea_res$QE, digits=2, format="f")), ", tau^2 = ", .(formatC(metafor_Eylea_res$tau2, digits=2, format="f")),
+     ", p = ", .(formatC(metafor_Eylea_res$QEp, digits=2, format="f")), "; ", I^2, " = ",
+     .(formatC(metafor_Eylea_res$I2, digits=2, format="f")), "%)")))
+
+
+
+
+
+text(-5, -1, pos=4, cex=0.75, bquote(paste("RE Model for All Studies (Q = ",
+     .(formatC(metafor_all_res$QE, digits=2, format="f")), ", tau^2 = ", .(formatC(metafor_all_res$tau2, digits=2, format="f")),
+     ", p = ", .(formatC(metafor_all_res$QEp, digits=2, format="f")), "; ", I^2, " = ",
+     .(formatC(metafor_all_res$I2, digits=2, format="f")), "%)")))
+```
+
+
+<br><br>
+
+Hence, overall, taking all treatments into account, a predicted 77% (67%-87%) of patients would likely require no retreatment.
+
+
+Note, Q, tau, and $I$ and the p-values here refer to the statistical significance of the presence of heterogeneity.
+
+
+<br><br>
+
+
+Look at individual treatment statistics by pooling all studies for each treatment and performing four separate meta-analyses using a random effects model. 
+
+
+n.b. This is not a Bayesian network meta-analysis but a conventional frequentist meta-analysis. This is mainly to to assess heterogeneity but also treatment effects in isolation (the individual treatment effect size predictions are based on calculated variances for each treatment in isolation). Whilst interesting to look at the results here, they only show the likelihood of a positive outcome compared to negative outcome for each treatment, they do not compare one treatment with another and the results here cannot be used to infer one treatment is better than the other.  
+
+
+As we are most interested in a comparison of treatment effects we need to perform a Bayesian analysis.
+
+<br>
+
+<div class="column-left">
+```{r}
+Avastin_stats <- data.frame(capture.output(metafor_Avastin_res)) %>%
+  kbl(caption = "Avastin") %>%
+  kable_classic(full_width = F, html_font = "Cambria", font_size=12)
+Avastin_stats
+
+Avastin_pred <- predict(metafor_Avastin_res, transf=transf.ipft.hm, targ=list(ni=metafor_Avastin_res$ni, xi=metafor_Avastin_res$xi))
+print(Avastin_pred)
+```
+</div>
+<div class="column-right">
+```{r}
+Lucentis_stats <- data.frame(capture.output(metafor_Lucentis_res)) %>%
+  kbl(caption = "Lucentis") %>%
+  kable_classic(full_width = F, html_font = "Cambria", font_size=12)
+Lucentis_stats
+
+Lucentis_pred <- predict(metafor_Lucentis_res, transf=transf.ipft.hm, targ=list(ni=metafor_Lucentis_res$ni, xi=metafor_Lucentis_res$xi))
+print(Lucentis_pred)
+```
+</div>
+<br><br>
+<div class="column-left">
+```{r}
+Eylea_stats <- data.frame(capture.output(metafor_Eylea_res)) %>%
+  kbl(caption = "Eylea") %>%
+  kable_classic(full_width = F, html_font = "Cambria", font_size=12)
+Eylea_stats
+
+Eylea_pred <- predict(metafor_Eylea_res, transf=transf.ipft.hm, targ=list(ni=metafor_Eylea_res$ni, xi=metafor_Eylea_res$xi))
+print(Eylea_pred)
+#writeLines(c("","","","","","","","","","","","","","","","","","No Eylea studies included","","",""))
+```
+</div>
+<div class="column-right">
+```{r}
+Laser_stats <- data.frame(capture.output(metafor_Laser_res)) %>%
+  kbl(caption = "Laser") %>%
+  kable_classic(full_width = F, html_font = "Cambria", font_size=12)
+Laser_stats
+
+Laser_pred <- predict(metafor_Laser_res, transf=transf.ipft.hm, targ=list(ni=metafor_Laser_res$ni, xi=metafor_Laser_res$xi))
+print(Laser_pred)
+```
+</div>
+
+
+
+
+
+<br><br><br><br>
+
+```{r include=FALSE}
+samples_Avastin <- sum(metafor_Avastin_data$ni)
+samples_Lucentis <- sum(metafor_Lucentis_data$ni)
+samples_Eylea <- sum(metafor_Eylea_data$ni)
+samples_Laser <- sum(metafor_Laser_data$ni)
+```
+
+
+The above stats show summary effect sizes (all have significance p<0.05 under the model results heading).
+
+<br>
+
+Magnitude of effect sizes:
+
+
+* Avastin effect size (predicted proportion):  91.2% [83.6 - 96.9] ...... (n=`r samples_Avastin`)
+* Lucentis effect size (predicted proportion):  78.3% [61.4 - 91.9] ...... (n=`r samples_Lucentis`)
+* Eylea effect size (predicted proportion):  53.3% [35.2 - 71]  ..... (n=`r samples_Eylea`)
+* Laser effect size (predicted proportion):  64.7% [42.8 - 84.2] ..... (n=`r samples_Laser`)
+
+
+<br>
+
+
+The above for Avastin predicts that treatment with Avastin would likely result in 91.2% of patients requiring no retreatment. 
+
+
+
+<br>
+
+Now we break down which studies contributed most to the overall result above and display with a Baujat plot 
+
+<br>
+
+```{r,fig.width=11, fig.height=7,fig.align="center"}
+b_res_df <- unite(metafor_all_df, newcol, c(authors, trt), remove=FALSE)
+b_res <- metafor::rma(yi, vi, data=b_res_df, slab=newcol)
+baujat(b_res, symbol="slab", cex=0.5, grid = F, main="Baujat plot")
+```
+
+
+<br>
+
+In our case the Baujat plot suggest the Laser arm of the Kabatas study is located well away from the other Laser study cluster and so maybe an outlier. 
+
+
+<br>
+
+
+Recall this is a conventional frequentist meta-analysis and so does not compare relative effect sizes of treatments. Each number should be taken in isolation and is predicted based on the study results for that treamtment alone. The percentages should not be used to pit one drug against another as the study sample sizes and variances are not equal between treatments. 
+
+
+This is why a Bayesian analysis is needed, to enable treatment comparisons by taking sample size and variance differences into account. An additional reason why a Bayesian analysis is usually preferred is due to the arbitrariness of p-values given above. All treatment effects are statistically significant but we don't know to what degree and how to compare one to another. 
+
+
+
+
+<br><br>
+
+## Heterogeneity 
+
+<br>
+
+The stats above show there is significant (p<0.05) heterogeneity in studies reporting Avastin, Lucentis and Laser outcomes suggesting the studies in each subgroup are significantly different from each other. This is in effect a statement that, for example, there is no common single effect size for Avastin based on all the Avastin studies, but rather a distribution of true effect sizes due to random effects. Here the random effects are significant enough to change the effect size e.g. dose differences or participant demographic (or any other between study variations).
+
+
+
+
+<br>
+
+
+***
+
+
+In summary: Significant heterogeneity implies there is no common single true effect size associated with a treatment across different studies of the same drug and that the differences between study results are beyond those attributable to chance/random sampling. Hence, we assume that there is not only one true effect size, but a distribution of true effect sizes which may or may not have identifiable modifiers such as gestational age or birth weight. This distribution is simulated later using a Bayesian analysis.
+
+
+***
+
+<br><br>
+
+
+## Funnel Plot
+
+
+<br>
+
+Generally when analysing study data where each study reports Pearson's $r$ or a $p$-value, funnel plots are standard practice to assess the presence of various types of publication bias (small study bias, english language bias etc...).  In our case we have proportional data and performed a meta-analysis of proportions. We do not have the same negative or positive connotations as p-value reporting as such, they simply report more or less responders. 
+
+
+<br>
+
+
+Funnel plot
+
+
+```{r}
+### funnel plot to show if asymmetry - this would indicate bias towards small studies - not publication bias. Publication bias includes small study bias but also other things as well.
+funnel <- metafor::funnel(metafor_all_res)
+regtest(metafor_all_res, model = "lm", predictor = "sei")
+```
+
+
+
+
+
+
+
+
+
+<br>
+
+Visually there is no obvious asymmetry and Egger's regression test confirms that there is no significant asymmetry (p > 0.05).
+
+<br>
+IMPORTANT NOTE: In the literature Funnel plots are commonly used as a test for publication bias but this is actually false. Funnel plots can only test for one aspect of publication bias which is small study bias (small studies generally have large standard errors). Publication bias can also include a myriad of other possible biases e.g. delayed reporting bias, location or language reporting bias, selective reporting or selective analysis bias, conflicts of interest etc... 
+
+
+Hence the only conclusion that can be made from this funnel plot and Egger's regression is that there is no evidence of small study bias. Perhaps it would be worth a quick run through each paper to check there are no conflicts reported.
+
+
+<br><br>
+
+
+As an extra feature I have looked into the power associated with these studies. Below is a sunset power-enhanced funnel plot which uses the standard error and effect sizes to calculate the power for all studies. Here the true effect size is assumed to be the lower bound (to be conservative) of the summary effect size noted in the forest plot above (0.70). This value is then used to calculate the power for each study according to the sample size they used.
+
+<br>
+
+
+```{r include=FALSE}
+### attaches actual power values onto metafor_all_df dataframe
+s_power <- function(se, true_effect, sig_level) {
+  
+  (1 - stats::pnorm(stats::qnorm(1 - sig_level/2) * 
+                      se, abs(true_effect), se)) + 
+    stats::pnorm(stats::qnorm(sig_level/2) * 
+                   se, abs(true_effect), se)
+}
+
+metafor_all_df$power <- s_power(se = funnel$y, 
+               true_effect = 0.67, 
+               sig_level = 0.05)
+
+```
+
+
+```{r}
+### Create a sunset power-enhanced funnel plot
+prop <- metafor_all_df$xi/metafor_all_df$ni
+se_res <- funnel$y
+rma_res <- cbind(prop, se_res)
+
+metaviz::viz_sunset(
+  rma_res,
+  y_axis = "se",
+  sig_level = 0.05,
+  power_stats = TRUE,
+  power_contours = "continuous",
+  contours = T,
+  sig_contours = TRUE,
+  text_size = 3,
+  point_size = 2,
+  true_effect = 0.67
+)
+```
+
+
+<br>
+
+Due to the very high effect sizes associated with all treatments we generally have very high power across all these studies (all in the green so 81+ percent power), i.e. sample sizes are large enough in all studies to detect possible type 2 errors (false negative). 
+
+
+This gives us confidence that statistically significant results are valid but more crucially for us, that all statistically non-significant results are also likely to be valid and not due to insufficient evidence. i.e. very unlikely to have any type 2 errors.
+
+
+
+
+<br>
+<br>
+<br>
+<br>
+
+
+
+## Bayesian network meta-analysis
+<br>
+
+### Summary of network
+<br>
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+df_long2 <- df_long[c(2,4,5,6)]
+colnames(df_long2)[2] <- "treatment"
+
+### for relative risk better to use non-responders rather than responders
+df_long2 <- mutate(df_long2, responders=sampleSize-responders)
+
+network <- mtc.network(df_long2, description = "Bayesian NMA")
+```
+
+```{r}
+summary(network)
+#summary(anohe)
+```
+
+<br>
+<br>
+
+Network plot (line thickness connecting nodes denotes the number studies for each comparison)
+```{r}
+plot(network)
+```
+
+
+
+
+<br>
+<br>
+
+
+
+<br>
+
+I am running a bayesian analysis with initially set vague priors.
+
+```{r, include=FALSE}
+set.seed(42)
+
+model <- mtc.model(network, likelihood = "binom", link = "log", linearModel = "random", n.chain = 4, type = "consistency")
+
+#################################################################
+# By default, the model will have 4 chains - generate a seed for each - see gemtc documentation
+seeds <- sample.int(4, n = .Machine$integer.max)
+# Apply JAGS RNG settings to each chain
+model$inits <- mapply(c, model$inits, list(
+list(.RNG.name="base::Wichmann-Hill", .RNG.seed=seeds[1]),
+list(.RNG.name="base::Marsaglia-Multicarry", .RNG.seed=seeds[2]),
+list(.RNG.name="base::Super-Duper", .RNG.seed=seeds[3]),
+list(.RNG.name="base::Mersenne-Twister", .RNG.seed=seeds[4])), SIMPLIFY=FALSE)
+#################################################################
+
+mcmc <- mtc.run(model, 
+                n.adapt = 8000, 
+                n.iter = 200000, 
+                thin = 10)
+#summary(mcmc)
+```
+
+
+<br>
+
+
+
+Before getting to the results we have to perform a few validation checks of the MCMC simulation to show convergence to a single distribution. 
+
+
+We have trace plots (left) demonstrating convergence of the 4 Markov chains (coloured lines running through centre). Density plots (right) of the posterior effect size estimate show a smooth normal distribution - all good here 
+
+<br>
+
+```{r,fig.width=8, fig.height=12,fig.align="center"}
+plot(mcmc)
+```
+
+<br>
+<br>
+
+Apart from visual inspection of the trace plots, further validation in the form of a Gelman-Rubin-Brooks plots shows the Potential Scale Reduction Factor (PSRF). This compares the variation within each chain in the mcmc simulation to the variation between chains over the course of the simulation. PSRF should shrink over time as the simulation converges. Stated end figure should be below 1.05 (not sure where this figure is derived from excatly) - all good here too
+
+
+```{r, echo=FALSE, fig.width=6, fig.height=6}
+gelman.plot(mcmc)
+gelman.diag(mcmc, multivariate = F)
+PSRF <- gelman.diag(mcmc)$mpsrf
+print(paste0("PSRF = ", round(PSRF, digits = 4)))
+```
+
+
+<br>
+<br>
+<br>
+
+
+## Network inconsistency
+
+<br>
+
+Assess possible inconsistency of the network model using the node split method.
+
+
+```{r eval=FALSE}
+nodesplit <- mtc.nodesplit(network,     
+                           linearModel = "random",
+                           n.adapt = 8000,
+                           n.iter = 200000,
+                           thin = 10)
+```
+
+```{r eval=FALSE}
+summary(nodesplit)
+names(nodesplit)
+```
+
+
+<br>
+
+The output shows us the results for the effects of different comparisons performed within the network  i.e. when using 1) only direct, 2) only indirect and 3) all available evidence. P-values (p>0.05) show no inconsistencies between direct, indirect and network analysis results reinforcing view that following netwrok meta-analysis is reliable.
+
+
+
+<br><br>
+
+
+# Summary of results of Bayesian network analysis:
+
+
+<br>
+
+
+## MCMC simulation summary
+
+<br>
+
+In the following analysis we are using a risk ratio (or relative risk) as the measure of liklihood. Network meta-analyses are often reported in terms of odds ratio (OD) or relative risk (RR).  The choice of liklihood reflects the distributional assumptions we make about the outcome data we are modelling. A binomial likelihood, such as RR, can be used for count data (e.g. number of treatment non-responders). We transform the parameters of the likelihood to the scale of measurement on which we assume the treatment effects to be linearly additive.  
+
+
+The choice between OR vs RR is usually down to the data. There is a complex relationship between the two but generally if the prevalance of a disease in a population is not known then OR is used. If the prevalence is known then RR is used. In our case the prevalence of ROP is assumed to be just the number of patients in each study and so we use RR. It also has a more intuative interpretation.
+
+<br>
+
+
+
+
+<br>
+
+
+A summary of the MCMC simulation
+```{r}
+summary(mcmc)
+```
+
+
+<br>
+<br>
+<br>
+
+
+# Relative effect table 
+
+<br>
+
+this is the main table of interest comparing all treatment options with results derived from direct and indirect methods:
+
+
+<br>
+
+
+
+```{r}
+###### Taken relative.effect.table function from GEMTC website (google function). Then adjusted the 'formatNumber bit to add exp(x) to transform log RR to RR 
+
+relative.effect.table_new <- function(result, covariate=NA) {
+  ts <- as.character(result[['model']][['network']][['treatments']][['id']])
+  tbl <- array(NA, dim=c(length(ts), length(ts), 3), dimnames=list(ts, ts, c("2.5%", "50%", "97.5%")))
+  comps <- combn(ts, 2)
+
+  for (i in 1:ncol(comps)) {
+    comp <- comps[,i]
+    samples <- as.matrix(relative.effect(result, comp[1], comp[2], preserve.extra=FALSE, covariate=covariate)$samples)
+    q <- quantile(samples, prob=c(0.025, 0.5, 0.975))
+    tbl[comp[1], comp[2],] <- unname(q)
+    q.inv <- c(-q[3], -q[2], -q[1])
+    tbl[comp[2], comp[1],] <- unname(q.inv)
+  }
+
+  attr(tbl, "model") <- result[['model']]
+  attr(tbl, "covariate") <- covariate
+  class(tbl) <- "mtc.relative.effect.table"
+
+  tbl
+}
+
+relative.effect.table.to.matrix <- function(x, formatNumber=formatC) {
+  y <- apply(x, c(1,2), function(x) {
+    if (all(!is.na(x))) {
+      paste0(formatNumber((exp(x[2]))), " (", formatNumber((exp(x[1]))), ", ", formatNumber((exp(x[3]))), ")")
+    } else {
+      NA
+    }
+  })
+  diag(y) <- rownames(x)
+  y
+}
+
+as.data.frame.mtc.relative.effect.table <- function(x, ...) {
+  as.data.frame(relative.effect.table.to.matrix(x, paste), stringsAsFactors=FALSE)
+}
+
+print.mtc.relative.effect.table <- function(x, ...) {
+  #scale.log <- if (ll.call('scale.log', attr(x, 'model'))) 'Log ' else ''
+  scale.name <- ll.call('scale.name', attr(x, 'model'))
+  y <- relative.effect.table.to.matrix(x)
+
+  cat(paste0(scale.name, " (95% CrI)\n\n"))
+  write.table(format(y, justify="centre"), quote=FALSE, row.names=FALSE, col.names=FALSE)
+}
+
+
+
+rel_effect <- relative.effect.table_new(mcmc, covariate=NA) 
+print(rel_effect)
+```
+
+<br> 
+
+***
+
+
+N.B. 
+
+
+Interpretation of Risk Ratio - ratio of probabilites
+
+
+* RR < 1: risk of requiring retreatment lower with treatment 1 than treatment 2
+* RR = 1: risk of requiring retreatment the same between treatment 1 and treatment 2
+* RR > 1: risk of requiring retreatment higher with treatment 1 than treatment 2
+
+<br>
+
+So for example looking at the relative effect table above we can say that the risk of requiring retreatment after laser is 1.677 times the risk of requiring retreatment after Lucentis. (Although note the large confidence intervals which cross RR=1 i.e. no difference)
+
+
+Note that 1.677 times the risk is $(1.677-1)\times 100 = 67.7\%$ increased risk (but again here this is not a statistically significant result)
+
+<br>
+
+*** 
+As before the only statistically significant result is that Avastin has become significantly better than Laser at preventing the need for retreatment for zone 1 ROP. So now the risk of requiring retreatment after Avastin is 0.33 times the risk of requiring retreatment after laser and is a statistically significant result 0.33 [0.1 - 0.9]. 
+
+
+Or, it's now a nice round number stating it the other way, i.e. the risk of requiring retreatment after laser is 3 [CrI: 1.1-9.8] times the risk of requiring retreatment after Avastin
+***
+
+<br><br><br>
+
+
+## Rankings
+
+
+Rank probability to answer which treatment performs best
+
+
+```{r,fig.align="center"}
+ranks <- rank.probability(mcmc, preferredDirection = -1)
+rankquant <- rank.quantiles(ranks, probs=c("2.5%"=0.025, "50%"=0.5, "97.5%"=0.975))
+ranks
+```
+
+
+```{r, fig.align="center", fig.cap="A rank plot illustrating empirical probabilities that each treatment is ranked 1st through 4th (left to right)."}
+plot(ranks, beside=TRUE) # plot a 'rankogram'
+```
+
+
+
+<br><br>
+
+
+
+---
+#Column headings above represent ranking (1st, 2nd, 3rd) with rows giving the probability of each ranking for a given treatment. Note these ranking plots are generally a bit misleading and their use often frowned upon these days. 
+---
+
+
+<br><br>
+
+Use surface under the cumulative ranking (SUCRA) measure to better quantify the probability rankings (takes ranking overlap into account)
+
+<br>
+
+```{r,fig.align="center"}
+print(gemtc::sucra(ranks), digits=3)
+#dmetar::sucra(ranks, lower.is.better = F)
+```
+
+<br>
+
+This suggests Avastin is ranked as the most effective treatment (i.e. lowest risk ratio meaning lowest risk of requiring retreatment) according to the studies involving treatment for zone 1 ROP. Lucentis is ranked second, Laser could be third or forth and Eylea forth. Again these SUCRA rankings are somewhat frowned upon these days as they do not take significance into account in our case only one comparison achieves statistical significance so all other comparisons are void.
+
+
+
+
+<br>
+
+
+We can look at forest plots to visualise results by comparing treatments.
+ 
+
+```{r, fig.width=8, fig.height=14,fig.align="center",fig.asp=0.30}
+gemtc::forest(relative.effect(mcmc, t1 = "Laser"), xlim=c(-log(50),log(50)))
+gemtc::forest(relative.effect(mcmc, t1 = "Ranibizumab"), xlim=c(-log(50),log(50)))
+gemtc::forest(relative.effect(mcmc, t1 = "Aflibercept"), xlim=c(-log(50),log(50)))
+gemtc::forest(relative.effect(mcmc, t1 = "Bevacizumab"), xlim=c(-log(50),log(50)))
+```
+
+
+
+Recall lower risk ratio here is better (i.e. lower risk of requiring retreatment)
+
+
+<br><br>
+
+The above can be interpreted as follows:
+
+
+In the case of Avastin for example; treatment with Avastin results in 0.33 times the risk of requiring retreatment as compared to treatment with laser. This is equivalent to saying Avastin results in $(1-0.33) \times 100 = 67\%$ reduction in risk of requiring retreatment compared to laser.  
+
+Or 
+
+
+treatment with Laser results in 3 times the risk of requiring retreatment as compared to treatment with Avastin.
+
+<br>
+
+So at this stage we could make the statement:
+
+
+***
+
+
+In summary: The only treatment comparison reaching statistical significance is that for Avastin vs Laser where Avastin is associated with a 67% reduction in risk of requiring retreatment compared to treatment with laser.  The credible intervals associated with all other treatment comparisons leads us to the conclusion that retreatment rates associated with all other treamtment pairwise comparisons demonstrate no statistical differences (RR not statistically significantly different from zero).
+
+
+The sunset power-enhanced plot also gives us confidence that results that show no statistical differences are in fact due to no differences and not due to insufficient evidence as I previously mentioned. All studies are sufficiently powered to detect differences assuming a reasonably homogeneous effect size across all studies. Our power analysis is based on an overall summary effect size of 0.67. 
+
+
+***
+
+
+<br><br>
+
+
+
+
+
+
+
+  
+  
+<br>
+<br>
+<br>
+<br>
+<br>
+
+
+
+
+
+
+
+
+
+
