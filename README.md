@@ -48,5 +48,5 @@ DOI for code   -   DOI: 10.5281/zenodo.7352066
 
 
 
-UPDATE:- 21/03/2023  -  analysis has been updated following the release of the FIREFLEYE results. 
+UPDATE:- 21/03/2023  -  analysis has been updated following the release of the FIREFLEYE results.  No sig changes to the meta-analysis conclusions, however, the addition of more information regarding Aflibercept has lowered the time to reactivation so that IVA no longer has a reactivation time that is statistically significantly greater than that of IVB or IVR. 
 
