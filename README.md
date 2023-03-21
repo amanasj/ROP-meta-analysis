@@ -48,5 +48,5 @@ DOI for code   -   DOI: 10.5281/zenodo.7352066
 
 
 
-UODATE:- 21/03/2023  -  analysis has been updated following the release of the FIREFLEYE results. 
+UPDATE:- 21/03/2023  -  analysis has been updated following the release of the FIREFLEYE results. 
 
